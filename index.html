@@ -46,8 +46,8 @@
         let activeColorId = 1;
 
         let colorPalette = []; 
-        let answerGrid = [];   
-        let userGrid = [];     
+        let answerGrid = new Uint8Array(GRID_SIZE * GRID_SIZE);   
+        let userGrid = new Uint8Array(GRID_SIZE * GRID_SIZE);     
 
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
@@ -67,50 +67,36 @@
             generateDeterministicData(currentLevel);
             loadState();
             resizeCanvas();
-            
-            // Check if iOS calculated a 0 width layout, delay if needed
-            if (canvas.width === 0 || canvas.height === 0) {
-                setTimeout(() => {
-                    resizeCanvas();
-                    resetViewport();
-                    generatePaletteUI();
-                    draw();
-                }, 100);
-            } else {
-                resetViewport();
-                generatePaletteUI();
-                draw();
-            }
+            resetViewport();
+            generatePaletteUI();
+            draw();
         }
 
         function generateDeterministicData(seed) {
-            function seededRandom(s) {
-                let x = Math.sin(s++) * 10000;
-                return x - Math.floor(x);
+            // Highly optimized LCG randomizer that executes lightning fast on iOS Safari
+            let currentSeed = (seed + 1) * 123456789;
+            function nextRandom() {
+                currentSeed = (currentSeed * 1664525 + 1013904223) % 4294967296;
+                return currentSeed / 4294967296;
             }
 
-            let currentSeed = seed * 78941;
-
-            colorPalette = [];
-            for (let i = 0; i <= TARGET_COLORS_COUNT; i++) {
-                if (i === 0) {
-                    colorPalette.push('#e0e0e0'); 
-                    continue;
-                }
-                let r = Math.floor(seededRandom(currentSeed++) * 200) + 40;
-                let g = Math.floor(seededRandom(currentSeed++) * 200) + 40;
-                let b = Math.floor(seededRandom(currentSeed++) * 200) + 40;
+            // Generate Palette Colors
+            colorPalette = ['#e0e0e0']; // Index 0 is uncolored baseline
+            for (let i = 1; i <= TARGET_COLORS_COUNT; i++) {
+                let r = Math.floor(nextRandom() * 180) + 50;
+                let g = Math.floor(nextRandom() * 180) + 50;
+                let b = Math.floor(nextRandom() * 180) + 50;
                 colorPalette.push(`rgb(${r},${g},${b})`);
             }
 
-            answerGrid = new Uint8Array(GRID_SIZE * GRID_SIZE);
-            userGrid = new Uint8Array(GRID_SIZE * GRID_SIZE);
+            // Clear active user grids
+            userGrid.fill(0);
 
+            // Generate clean, high-performance visual blocks using simple multiplication strides
             for (let y = 0; y < GRID_SIZE; y++) {
                 for (let x = 0; x < GRID_SIZE; x++) {
-                    let n = seededRandom(currentSeed + Math.floor(x/6) + Math.floor(y/6) * 25);
-                    let colorId = Math.floor(n * TARGET_COLORS_COUNT) + 1;
-                    answerGrid[y * GRID_SIZE + x] = colorId;
+                    let patternVal = (x * 7 + y * 13 + seed * 31) % TARGET_COLORS_COUNT;
+                    answerGrid[y * GRID_SIZE + x] = patternVal + 1;
                 }
             }
         }
@@ -161,6 +147,7 @@
         function resetViewport() {
             const minDim = Math.min(canvas.width, canvas.height);
             viewTransform.zoom = (minDim / GRID_SIZE) * 0.8;
+            if (viewTransform.zoom < 1) viewTransform.zoom = 3; // Ensure safety clamp scale
             viewTransform.x = (canvas.width - GRID_SIZE * viewTransform.zoom) / 2;
             viewTransform.y = (canvas.height - GRID_SIZE * viewTransform.zoom) / 2;
         }
@@ -168,7 +155,6 @@
         function draw() {
             if (canvas.width === 0 || canvas.height === 0) return;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.imageSmoothingEnabled = false;
 
             ctx.save();
             ctx.translate(viewTransform.x, viewTransform.y);
@@ -184,25 +170,25 @@
 
                     if (uColor !== 0) {
                         ctx.fillStyle = colorPalette[uColor];
-                        ctx.fillRect(x, y, 1.02, 1.02); 
+                        ctx.fillRect(x, y, 1.05, 1.05); 
                     } else {
                         if (aColor === activeColorId) {
                             ctx.fillStyle = '#fff0f5'; 
                             ctx.fillRect(x, y, 1, 1);
                             ctx.strokeStyle = '#ff0055';
-                            ctx.lineWidth = 0.05;
+                            ctx.lineWidth = 0.06;
                             ctx.strokeRect(x, y, 1, 1);
                         } else {
                             ctx.fillStyle = '#f0f0f0';
                             ctx.fillRect(x, y, 1, 1);
                             ctx.strokeStyle = '#cccccc';
-                            ctx.lineWidth = 0.02;
+                            ctx.lineWidth = 0.03;
                             ctx.strokeRect(x, y, 1, 1);
                         }
 
                         if (z > 14) {
-                            ctx.fillStyle = '#666666';
-                            ctx.font = `${0.35}px system-ui`;
+                            ctx.fillStyle = '#555555';
+                            ctx.font = '0.35px system-ui, sans-serif';
                             ctx.textAlign = 'center';
                             ctx.textBaseline = 'middle';
                             ctx.fillText(aColor, x + 0.5, y + 0.5);
@@ -222,7 +208,7 @@
             return { x: gridX, y: gridY };
         }
 
-        // DESKTOP INTERFACE LISTENERS
+        // DESKTOP EVENT MANAGEMENT
         canvas.addEventListener('mousedown', (e) => {
             if (e.button !== 0) return;
             const coords = getGridCoords(e.clientX, e.clientY);
@@ -243,10 +229,8 @@
 
         canvas.addEventListener('mousemove', (e) => {
             if (isDragging) {
-                const dx = e.clientX - lastMousePos.x;
-                const dy = e.clientY - lastMousePos.y;
-                viewTransform.x += dx;
-                viewTransform.y += dy;
+                viewTransform.x += e.clientX - lastMousePos.x;
+                viewTransform.y += e.clientY - lastMousePos.y;
                 draw();
             }
             lastMousePos = { x: e.clientX, y: e.clientY };
@@ -263,10 +247,10 @@
             const wheelGridX = (mouseX - viewTransform.x) / viewTransform.zoom;
             const wheelGridY = (mouseY - viewTransform.y) / viewTransform.zoom;
 
-            const zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+            const zoomFactor = e.deltaY < 0 ? 1.2 : 1 / 1.2;
             const nextZoom = viewTransform.zoom * zoomFactor;
 
-            if (nextZoom > 45 || nextZoom < 2) return;
+            if (nextZoom > 50 || nextZoom < 1.5) return;
 
             viewTransform.zoom = nextZoom;
             viewTransform.x = mouseX - wheelGridX * viewTransform.zoom;
@@ -274,7 +258,7 @@
             draw();
         }, { passive: false });
 
-        // MOBILE/TOUCH GESTURE INSTANCES
+        // MOBILE GESTURE EVENT MANAGEMENT
         canvas.addEventListener('touchstart', (e) => {
             if (e.touches.length === 1) {
                 const touch = e.touches[0];
@@ -283,4 +267,99 @@
                 
                 if (coords.x >= 0 && coords.x < GRID_SIZE && coords.y >= 0 && coords.y < GRID_SIZE) {
                     const idx = coords.y * GRID_SIZE + coords.x;
-                    if (userGrid[idx] === 0 && answerGrid[idx] === activeColorId
+                    if (userGrid[idx] === 0 && answerGrid[idx] === activeColorId) {
+                        userGrid[idx] = activeColorId;
+                        saveState();
+                        if(getRemainingCounts()[activeColorId] === 0) generatePaletteUI();
+                        draw();
+                        return;
+                    }
+                }
+                isDragging = true;
+            } else if (e.touches.length === 2) {
+                isDragging = false;
+                isPanning = true;
+                touchStartDist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                lastMousePos.x = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                lastMousePos.y = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+            }
+        }, { passive: true });
+
+        canvas.addEventListener('touchmove', (e) => {
+            if (isDragging && e.touches.length === 1) {
+                const touch = e.touches[0];
+                viewTransform.x += touch.clientX - lastMousePos.x;
+                viewTransform.y += touch.clientY - lastMousePos.y;
+                lastMousePos = { x: touch.clientX, y: touch.clientY };
+                draw();
+            } else if (isPanning && e.touches.length === 2) {
+                const dist = Math.hypot(
+                    e.touches[0].clientX - e.touches[1].clientX,
+                    e.touches[0].clientY - e.touches[1].clientY
+                );
+                const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+                const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+                
+                const zoomFactor = dist / touchStartDist;
+                const nextZoom = viewTransform.zoom * zoomFactor;
+                
+                if (nextZoom <= 50 && nextZoom >= 1.5) {
+                    const gridX = (midX - viewTransform.x) / viewTransform.zoom;
+                    const gridY = (midY - viewTransform.y) / viewTransform.zoom;
+                    
+                    viewTransform.zoom = nextZoom;
+                    viewTransform.x = midX - gridX * viewTransform.zoom;
+                    viewTransform.y = midY - gridY * viewTransform.zoom;
+                    touchStartDist = dist;
+                    draw();
+                }
+            }
+        }, { passive: true });
+
+        window.addEventListener('touchend', () => {
+            isDragging = false;
+            isPanning = false;
+        });
+
+        function moveLevel(dir) {
+            let next = currentLevel + dir;
+            if(next >= 0 && next < TOTAL_LEVELS) initLevel(next);
+        }
+
+        function resizeCanvas() {
+            const container = document.getElementById('canvas-container');
+            if (!container) return;
+            canvas.width = container.clientWidth || window.innerWidth;
+            canvas.height = container.clientHeight || (window.innerHeight - 240);
+        }
+
+        function saveState() {
+            const coloredCoords = [];
+            for(let i=0; i<userGrid.length; i++) {
+                if(userGrid[i] !== 0) coloredCoords.push(i);
+            }
+            localStorage.setItem(`grid_save_${currentLevel}`, JSON.stringify(coloredCoords));
+        }
+
+        function loadState() {
+            const data = localStorage.getItem(`grid_save_${currentLevel}`);
+            if(!data) return;
+            const coloredIndices = JSON.parse(data);
+            for(let i=0; i<coloredIndices.length; i++) {
+                const idx = coloredIndices[i];
+                userGrid[idx] = answerGrid[idx];
+            }
+        }
+
+        window.addEventListener('resize', () => { resizeCanvas(); draw(); });
+        
+        // Instant micro-delayed startup chain to completely bypass iOS interface layout blocks
+        window.addEventListener('load', () => {
+            setTimeout(() => { initLevel(0); }, 50);
+        });
+    </script>
+</body>
+</html>
