@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>High-Density Grid Color By Number</title>
+    <title>Organic Color By Number Grid</title>
     <style>
         :root { --bg: #121212; --ui: #1e1e1e; --accent: #00adb5; --text: #eeeeee; }
         body { margin: 0; padding: 0; background: var(--bg); font-family: system-ui, sans-serif; color: var(--text); display: flex; flex-direction: column; height: 100vh; overflow: hidden; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -73,15 +73,13 @@
         }
 
         function generateDeterministicData(seed) {
-            // Highly optimized LCG randomizer that executes lightning fast on iOS Safari
             let currentSeed = (seed + 1) * 123456789;
             function nextRandom() {
                 currentSeed = (currentSeed * 1664525 + 1013904223) % 4294967296;
                 return currentSeed / 4294967296;
             }
 
-            // Generate Palette Colors
-            colorPalette = ['#e0e0e0']; // Index 0 is uncolored baseline
+            colorPalette = ['#e0e0e0']; 
             for (let i = 1; i <= TARGET_COLORS_COUNT; i++) {
                 let r = Math.floor(nextRandom() * 180) + 50;
                 let g = Math.floor(nextRandom() * 180) + 50;
@@ -89,14 +87,23 @@
                 colorPalette.push(`rgb(${r},${g},${b})`);
             }
 
-            // Clear active user grids
             userGrid.fill(0);
 
-            // Generate clean, high-performance visual blocks using simple multiplication strides
             for (let y = 0; y < GRID_SIZE; y++) {
                 for (let x = 0; x < GRID_SIZE; x++) {
-                    let patternVal = (x * 7 + y * 13 + seed * 31) % TARGET_COLORS_COUNT;
-                    answerGrid[y * GRID_SIZE + x] = patternVal + 1;
+                    let nx = x / 18.5 + (seed * 1.7);
+                    let ny = y / 18.5 + (seed * 2.3);
+                    
+                    let noise = Math.sin(nx) * Math.cos(ny) + 
+                                Math.sin(nx * 2.3 + ny * 1.5) * 0.5 + 
+                                Math.cos(nx * 0.5 - ny * 3.1) * 0.25;
+                    
+                    let normalized = (noise + 1.75) / 3.5; 
+                    if (normalized < 0) normalized = 0;
+                    if (normalized >= 1) normalized = 0.99;
+                    
+                    let colorId = Math.floor(normalized * TARGET_COLORS_COUNT) + 1;
+                    answerGrid[y * GRID_SIZE + x] = colorId;
                 }
             }
         }
@@ -147,7 +154,7 @@
         function resetViewport() {
             const minDim = Math.min(canvas.width, canvas.height);
             viewTransform.zoom = (minDim / GRID_SIZE) * 0.8;
-            if (viewTransform.zoom < 1) viewTransform.zoom = 3; // Ensure safety clamp scale
+            if (viewTransform.zoom < 1) viewTransform.zoom = 3; 
             viewTransform.x = (canvas.width - GRID_SIZE * viewTransform.zoom) / 2;
             viewTransform.y = (canvas.height - GRID_SIZE * viewTransform.zoom) / 2;
         }
@@ -208,7 +215,6 @@
             return { x: gridX, y: gridY };
         }
 
-        // DESKTOP EVENT MANAGEMENT
         canvas.addEventListener('mousedown', (e) => {
             if (e.button !== 0) return;
             const coords = getGridCoords(e.clientX, e.clientY);
@@ -258,7 +264,6 @@
             draw();
         }, { passive: false });
 
-        // MOBILE GESTURE EVENT MANAGEMENT
         canvas.addEventListener('touchstart', (e) => {
             if (e.touches.length === 1) {
                 const touch = e.touches[0];
@@ -356,7 +361,6 @@
 
         window.addEventListener('resize', () => { resizeCanvas(); draw(); });
         
-        // Instant micro-delayed startup chain to completely bypass iOS interface layout blocks
         window.addEventListener('load', () => {
             setTimeout(() => { initLevel(0); }, 50);
         });
