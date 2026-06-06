@@ -89,6 +89,7 @@
                 <button class="btn" style="background: #3a3a40;" onclick="returnToGallery()">← Gallery</button>
                 <button class="btn" id="prev-btn" onclick="moveLevel(-1)">Prev</button>
                 <button class="btn" id="next-btn" onclick="moveLevel(1)">Next</button>
+                <button class="btn" style="background: #444; padding: 10px 14px;" title="Fullscreen Mode" onclick="toggleFullScreen()">⛶</button>
                 <button class="btn" style="background: #f1c40f; color: #111;" onclick="useHint()">💡 Hint</button>
             </div>
         </div>
@@ -96,7 +97,7 @@
             <div id="canvas-container">
                 <canvas id="gameCanvas"></canvas>
             </div>
-            <div id="controls-hint">Scroll/Pinch to Zoom | Drag to Pan | Tap to Color</div>
+            <div id="controls-hint">Drag Empty Space to Pan | Drag Uncolored Pixels to Paint | Pinch/Scroll to Zoom</div>
         </div>
         
         <div id="palette-wrapper">
@@ -132,8 +133,10 @@
         const ctx = canvas.getContext('2d');
         let viewTransform = { x: 0, y: 0, zoom: 1 };
         
+        // Input Tracking Variables
         let isDragging = false;
         let isPanning = false;
+        let isSpacePressed = false;
         let lastMousePos = { x: 0, y: 0 };
         let touchStartDist = 0;
 
@@ -154,7 +157,7 @@
         let hintPingRadius = 0;
         let hintAnimationId = null;
 
-        // Safe Thumbnail Generator Queue Variables
+        // Safe Thumbnail Generator Queue
         let thumbnailQueue = [];
         let isGeneratingThumbnail = false;
 
@@ -177,7 +180,6 @@
             renderPortfolioGallery();
         }
 
-        // --- PALETTE TRANSITION DRAWER ---
         function togglePalettePanel() {
             const wrapper = document.getElementById('palette-wrapper');
             const toggleIcon = document.getElementById('toggle-icon');
@@ -201,6 +203,23 @@
             requestAnimationFrame(step);
         }
 
+        // --- FULLSCREEN CONTROLLER ---
+        function toggleFullScreen() {
+            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+                if (document.documentElement.requestFullscreen) {
+                    document.documentElement.requestFullscreen();
+                } else if (document.documentElement.webkitRequestFullscreen) { /* Safari */
+                    document.documentElement.webkitRequestFullscreen();
+                }
+            } else {
+                if (document.exitFullscreen) {
+                    document.exitFullscreen();
+                } else if (document.webkitExitFullscreen) { /* Safari */
+                    document.webkitExitFullscreen();
+                }
+            }
+        }
+
         // --- SCREEN ROUTING ENGINE ---
         function returnToGallery() {
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
@@ -216,7 +235,6 @@
             for (let i = 0; i < TOTAL_LEVELS; i++) {
                 const saved = localStorage.getItem(`grid_save_${currentCategory}_${i}`);
                 if (!saved) { nextIncomplete = i; break; }
-                
                 const coloredIndices = JSON.parse(saved);
                 if (coloredIndices.length < (GRID_SIZE * GRID_SIZE)) {
                     nextIncomplete = i;
@@ -229,7 +247,6 @@
         function loadActiveGameLevel(levelIndex) {
             document.getElementById('home-screen').classList.remove('active');
             document.getElementById('game-screen').classList.add('active');
-            
             document.getElementById('level-type-label').textContent = CATEGORIES[currentCategory].title.split(' ')[1];
             document.getElementById('total-index').textContent = TOTAL_LEVELS;
 
@@ -244,10 +261,8 @@
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
             if (hintAnimationId) cancelAnimationFrame(hintAnimationId);
             
-            // Pauses the gallery thumbnail generator so it doesn't interrupt your active game canvas
             thumbnailQueue = []; 
             isGeneratingThumbnail = false;
-
             animationFrameId = null;
             activeHintCell = null;
             isLevelComplete = false;
@@ -320,7 +335,6 @@
             let dy = y - centerY;
             let r = Math.sqrt(dx * dx + dy * dy);
             let angle = Math.atan2(dy, dx);
-            
             if (r > GRID_SIZE / 2 - 2) return 1; 
 
             let sector = 2 * Math.PI / currentSymmetryArms;
@@ -359,14 +373,11 @@
                 const imgData = tempCtx.getImageData(0, 0, GRID_SIZE, GRID_SIZE);
                 const bytes = imgData.data;
                 
-                // --- BLACK AND WHITE / GRAYSCALE FILTER ---
                 let colorPixelCount = 0;
                 const totalPixels = bytes.length / 4;
                 for (let i = 0; i < bytes.length; i += 4) {
                     let r = bytes[i], g = bytes[i+1], b = bytes[i+2];
-                    if (Math.max(r, g, b) - Math.min(r, g, b) > 20) {
-                        colorPixelCount++;
-                    }
+                    if (Math.max(r, g, b) - Math.min(r, g, b) > 20) colorPixelCount++;
                 }
                 
                 if (colorPixelCount < totalPixels * 0.10) {
@@ -375,7 +386,6 @@
                     return;
                 }
 
-                // --- MEDIAN CUT QUANTIZATION ---
                 const pixels = [];
                 for (let i = 0; i < bytes.length; i += 4) {
                     pixels.push([bytes[i], bytes[i+1], bytes[i+2]]);
@@ -460,14 +470,12 @@
                     let r = bytes[i];
                     let g = bytes[i+1];
                     let b = bytes[i+2];
-                    
                     let closestId = 1;
                     let minDistance = Infinity;
                     
                     for (let cId = 1; cId < rgbPaletteParsed.length; cId++) {
                         const pal = rgbPaletteParsed[cId];
                         let distance = Math.pow(r - pal[0], 2) + Math.pow(g - pal[1], 2) + Math.pow(b - pal[2], 2);
-                        
                         if (distance < minDistance) {
                             minDistance = distance;
                             closestId = cId;
@@ -494,7 +502,6 @@
             let inProgressCount = 0;
             let completedCount = 0;
 
-            // Clear any active queue from a previous tab
             thumbnailQueue = [];
             isGeneratingThumbnail = false;
 
@@ -535,7 +542,6 @@
                     inProgressGallery.appendChild(card);
                 }
 
-                // Add to Async Render Queue to protect globals
                 thumbnailQueue.push({
                     category: currentCategory,
                     levelIndex: i,
@@ -923,29 +929,51 @@
             return { x: gridX, y: gridY };
         }
 
-        // --- INTERACTION REGISTER ROUTINES ---
+        // --- INTERACTION / PANNING / ZOOMING EVENT HANDLERS ---
+        window.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                isSpacePressed = true;
+                if(document.activeElement === document.body) e.preventDefault();
+            }
+        });
+        window.addEventListener('keyup', (e) => {
+            if (e.code === 'Space') {
+                isSpacePressed = false;
+            }
+        });
+
         canvas.addEventListener('mousedown', (e) => {
-            if (e.button !== 0 || isLevelComplete) return;
+            if (isLevelComplete) return;
             const coords = getGridCoords(e.clientX, e.clientY);
             lastMousePos = { x: e.clientX, y: e.clientY };
             
-            if (e.button === 2) {
+            // Explicit panning via Spacebar, Right-Click, or Middle-Click
+            if (e.button === 2 || e.button === 1 || isSpacePressed) {
                 isPanning = true;
                 return;
             }
 
-            if (coords.x >= 0 && coords.x < GRID_SIZE && coords.y >= 0 && coords.y < GRID_SIZE) {
-                const idx = coords.y * GRID_SIZE + coords.x;
-                if (userGrid[idx] === 0 && answerGrid[idx] === activeColorId) {
-                    userGrid[idx] = activeColorId;
-                    saveState();
-                    if(getRemainingCounts()[activeColorId] === 0) generatePaletteUI();
-                    checkCompletionStatus();
-                    draw();
-                    return;
+            // Normal Left Click Handler (Intelligent Input)
+            if (e.button === 0) {
+                if (coords.x >= 0 && coords.x < GRID_SIZE && coords.y >= 0 && coords.y < GRID_SIZE) {
+                    const idx = coords.y * GRID_SIZE + coords.x;
+                    // If target is valid and uncolored, start DRAGGING (painting)
+                    if (userGrid[idx] === 0 && answerGrid[idx] === activeColorId) {
+                        isDragging = true;
+                        userGrid[idx] = activeColorId;
+                        saveState();
+                        if(getRemainingCounts()[activeColorId] === 0) generatePaletteUI();
+                        checkCompletionStatus();
+                        draw();
+                    } else {
+                        // Intelligent Fallback: Missed the color, already painted, etc -> Start PANNING
+                        isPanning = true;
+                    }
+                } else {
+                    // Clicked out of bounds -> Start PANNING
+                    isPanning = true; 
                 }
             }
-            isDragging = true;
         });
 
         canvas.addEventListener('mousemove', (e) => {
@@ -996,7 +1024,9 @@
             draw();
         }, { passive: false });
 
+        // Touch Input - Critical: { passive: false } and e.preventDefault() block browser scrolling.
         canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); 
             if (e.touches.length === 1) {
                 const touch = e.touches[0];
                 const coords = getGridCoords(touch.clientX, touch.clientY);
@@ -1005,28 +1035,36 @@
                 if (coords.x >= 0 && coords.x < GRID_SIZE && coords.y >= 0 && coords.y < GRID_SIZE) {
                     const idx = coords.y * GRID_SIZE + coords.x;
                     if (userGrid[idx] === 0 && answerGrid[idx] === activeColorId && !isLevelComplete) {
+                        isDragging = true;
                         userGrid[idx] = activeColorId;
                         saveState();
                         if(getRemainingCounts()[activeColorId] === 0) generatePaletteUI();
                         checkCompletionStatus();
                         draw();
-                        return;
+                    } else {
+                        // Intelligent Fallback: 1-finger drag pans if clicking unpaintable space
+                        isPanning = true;
                     }
+                } else {
+                    isPanning = true;
                 }
-                isDragging = true;
             } else if (e.touches.length === 2) {
                 isDragging = false;
                 isPanning = true;
-                touchStartDist = Math.hypot(
-                    e.touches[0].clientX - e.touches[1].clientX,
-                    e.touches[0].clientY - e.touches[1].clientY
-                );
+                
+                // Track initial distance for zoom scaling
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                touchStartDist = Math.hypot(dx, dy);
+                
+                // Track initial midpoint for panning calculation
                 lastMousePos.x = (e.touches[0].clientX + e.touches[1].clientX) / 2;
                 lastMousePos.y = (e.touches[0].clientY + e.touches[1].clientY) / 2;
             }
-        }, { passive: true });
+        }, { passive: false });
 
         canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault(); 
             if (isDragging && e.touches.length === 1) {
                 const touch = e.touches[0];
                 const coords = getGridCoords(touch.clientX, touch.clientY);
@@ -1040,29 +1078,48 @@
                     }
                 }
                 lastMousePos = { x: touch.clientX, y: touch.clientY };
+            } else if (isPanning && e.touches.length === 1) {
+                // Allows 1-finger panning if intelligently triggered
+                const touch = e.touches[0];
+                viewTransform.x += (touch.clientX - lastMousePos.x);
+                viewTransform.y += (touch.clientY - lastMousePos.y);
+                lastMousePos = { x: touch.clientX, y: touch.clientY };
+                draw();
             } else if (isPanning && e.touches.length === 2) {
-                const dist = Math.hypot(
-                    e.touches[0].clientX - e.touches[1].clientX,
-                    e.touches[0].clientY - e.touches[1].clientY
-                );
+                // Calculate current touch midpoint
                 const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
                 const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+                
+                // Process Pan (Translation)
+                viewTransform.x += (midX - lastMousePos.x);
+                viewTransform.y += (midY - lastMousePos.y);
+
+                // Process Zoom
+                const dx = e.touches[0].clientX - e.touches[1].clientX;
+                const dy = e.touches[0].clientY - e.touches[1].clientY;
+                const dist = Math.hypot(dx, dy);
                 
                 const zoomFactor = dist / touchStartDist;
                 const nextZoom = viewTransform.zoom * zoomFactor;
                 
                 if (nextZoom <= 50 && nextZoom >= 1.5) {
-                    const gridX = (midX - viewTransform.x) / viewTransform.zoom;
-                    const gridY = (midY - viewTransform.y) / viewTransform.zoom;
+                    // Temporarily calculate world coord underneath the midpoint with old zoom
+                    const worldX = (midX - viewTransform.x) / viewTransform.zoom;
+                    const worldY = (midY - viewTransform.y) / viewTransform.zoom;
                     
                     viewTransform.zoom = nextZoom;
-                    viewTransform.x = midX - gridX * viewTransform.zoom;
-                    viewTransform.y = midY - gridY * viewTransform.zoom;
-                    touchStartDist = dist;
-                    draw();
+                    
+                    // Adjust view bounds so world coord remains exactly under fingers
+                    viewTransform.x = midX - worldX * viewTransform.zoom;
+                    viewTransform.y = midY - worldY * viewTransform.zoom;
                 }
+                
+                touchStartDist = dist;
+                lastMousePos.x = midX;
+                lastMousePos.y = midY;
+                draw();
             }
-        }, { passive: true });
+        }, { passive: false });
 
         window.addEventListener('touchend', () => {
             if (isDragging || isPanning) saveState();
