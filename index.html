@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>High-Density Grid Color By Number</title>
+    <style>
+        :root { --bg: #121212; --ui: #1e1e1e; --accent: #00adb5; --text: #eeeeee; }
+        body { margin: 0; padding: 0; background: var(--bg); font-family: system-ui, sans-serif; color: var(--text); display: flex; flex-direction: column; height: 100vh; overflow: hidden; user-select: none; -webkit-user-select: none; touch-action: none; }
+        #header { height: 60px; background: var(--ui); display: flex; align-items: center; padding: 0 20px; justify-content: space-between; border-bottom: 1px solid #333; z-index: 10; flex-shrink: 0; }
+        .btn { background: var(--accent); color: #fff; border: none; padding: 10px 20px; font-weight: bold; cursor: pointer; border-radius: 4px; }
+        .btn:disabled { background: #444; cursor: not-allowed; }
+        #main-layout { flex: 1; display: flex; position: relative; background: #151515; overflow: hidden; width: 100%; }
+        #canvas-container { flex: 1; position: relative; cursor: grab; width: 100%; height: 100%; }
+        #canvas-container:active { cursor: grabbing; }
+        canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: block; }
+        #palette-bar { height: 180px; background: var(--ui); display: grid; grid-template-columns: repeat(auto-fill, minmax(50px, 1fr)); gap: 6px; padding: 10px; overflow-y: auto; border-top: 1px solid #333; z-index: 10; flex-shrink: 0; }
+        .swatch { height: 45px; border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; color: #000; text-shadow: 0 0 4px #fff; border: 2px solid transparent; position: relative; }
+        .swatch.selected { border-color: var(--text); box-shadow: inset 0 0 0 2px #000; }
+        .swatch.done { opacity: 0.15; cursor: default; pointer-events: none; }
+        #controls-hint { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 8px 12px; border-radius: 4px; font-size: 12px; pointer-events: none; z-index: 5; }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <div>Grid Level: <span id="img-index">1</span> / 1000</div>
+        <div>
+            <button class="btn" id="prev-btn" onclick="moveLevel(-1)">Prev</button>
+            <button class="btn" id="next-btn" onclick="moveLevel(1)">Next</button>
+        </div>
+    </div>
+    <div id="main-layout">
+        <div id="canvas-container">
+            <canvas id="gameCanvas"></canvas>
+        </div>
+        <div id="controls-hint">Scroll/Pinch to Zoom | Drag to Pan | Tap to Color</div>
+    </div>
+    <div id="palette-bar"></div>
+
+    <script>
+        const GRID_SIZE = 150; 
+        const TOTAL_LEVELS = 1000;
+        const TARGET_COLORS_COUNT = 160; 
+
+        let currentLevel = 0;
+        let activeColorId = 1;
+
+        let colorPalette = []; 
+        let answerGrid = [];   
+        let userGrid = [];     
+
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        let viewTransform = { x: 0, y: 0, zoom: 1 };
+        
+        let isDragging = false;
+        let isPanning = false;
+        let lastMousePos = { x: 0, y: 0 };
+        let touchStartDist = 0;
+
+        function initLevel(levelIndex) {
+            currentLevel = levelIndex;
+            document.getElementById('img-index').textContent = currentLevel + 1;
+            document.getElementById('prev-btn').disabled = currentLevel === 0;
+            document.getElementById('next-btn').disabled = currentLevel === TOTAL_LEVELS - 1;
+
+            generateDeterministicData(currentLevel);
+            loadState();
+            resizeCanvas();
+            
+            // Check if iOS calculated a 0 width layout, delay if needed
+            if (canvas.width === 0 || canvas.height === 0) {
+                setTimeout(() => {
+                    resizeCanvas();
+                    resetViewport();
+                    generatePaletteUI();
+                    draw();
+                }, 100);
+            } else {
+                resetViewport();
+                generatePaletteUI();
+                draw();
+            }
+        }
+
+        function generateDeterministicData(seed) {
+            function seededRandom(s) {
+                let x = Math.sin(s++) * 10000;
+                return x - Math.floor(x);
+            }
+
+            let currentSeed = seed * 78941;
+
+            colorPalette = [];
+            for (let i = 0; i <= TARGET_COLORS_COUNT; i++) {
+                if (i === 0) {
+                    colorPalette.push('#e0e0e0'); 
+                    continue;
+                }
+                let r = Math.floor(seededRandom(currentSeed++) * 200) + 40;
+                let g = Math.floor(seededRandom(currentSeed++) * 200) + 40;
+                let b = Math.floor(seededRandom(currentSeed++) * 200) + 40;
+                colorPalette.push(`rgb(${r},${g},${b})`);
+            }
+
+            answerGrid = new Uint8Array(GRID_SIZE * GRID_SIZE);
+            userGrid = new Uint8Array(GRID_SIZE * GRID_SIZE);
+
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    let n = seededRandom(currentSeed + Math.floor(x/6) + Math.floor(y/6) * 25);
+                    let colorId = Math.floor(n * TARGET_COLORS_COUNT) + 1;
+                    answerGrid[y * GRID_SIZE + x] = colorId;
+                }
+            }
+        }
+
+        function generatePaletteUI() {
+            const bar = document.getElementById('palette-bar');
+            bar.innerHTML = '';
+            
+            const counts = getRemainingCounts();
+            let firstAvailableSelected = false;
+
+            for (let i = 1; i <= TARGET_COLORS_COUNT; i++) {
+                if(counts[i] === 0) continue; 
+
+                const swatch = document.createElement('div');
+                swatch.className = 'swatch';
+                swatch.style.backgroundColor = colorPalette[i];
+                swatch.textContent = i;
+                
+                if(!firstAvailableSelected && (i === activeColorId || counts[activeColorId] === 0)) {
+                    activeColorId = i;
+                    swatch.classList.add('selected');
+                    firstAvailableSelected = true;
+                } else if (i === activeColorId) {
+                    swatch.classList.add('selected');
+                }
+                
+                swatch.onclick = () => {
+                    activeColorId = i;
+                    document.querySelectorAll('.swatch').forEach(s => s.classList.remove('selected'));
+                    swatch.classList.add('selected');
+                    draw();
+                };
+                bar.appendChild(swatch);
+            }
+        }
+
+        function getRemainingCounts() {
+            const counts = new Int32Array(TARGET_COLORS_COUNT + 1);
+            for(let i=0; i<answerGrid.length; i++) {
+                if(userGrid[i] === 0) {
+                    counts[answerGrid[i]]++;
+                }
+            }
+            return counts;
+        }
+
+        function resetViewport() {
+            const minDim = Math.min(canvas.width, canvas.height);
+            viewTransform.zoom = (minDim / GRID_SIZE) * 0.8;
+            viewTransform.x = (canvas.width - GRID_SIZE * viewTransform.zoom) / 2;
+            viewTransform.y = (canvas.height - GRID_SIZE * viewTransform.zoom) / 2;
+        }
+
+        function draw() {
+            if (canvas.width === 0 || canvas.height === 0) return;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.imageSmoothingEnabled = false;
+
+            ctx.save();
+            ctx.translate(viewTransform.x, viewTransform.y);
+            ctx.scale(viewTransform.zoom, viewTransform.zoom);
+
+            const z = viewTransform.zoom;
+
+            for (let y = 0; y < GRID_SIZE; y++) {
+                for (let x = 0; x < GRID_SIZE; x++) {
+                    const idx = y * GRID_SIZE + x;
+                    const uColor = userGrid[idx];
+                    const aColor = answerGrid[idx];
+
+                    if (uColor !== 0) {
+                        ctx.fillStyle = colorPalette[uColor];
+                        ctx.fillRect(x, y, 1.02, 1.02); 
+                    } else {
+                        if (aColor === activeColorId) {
+                            ctx.fillStyle = '#fff0f5'; 
+                            ctx.fillRect(x, y, 1, 1);
+                            ctx.strokeStyle = '#ff0055';
+                            ctx.lineWidth = 0.05;
+                            ctx.strokeRect(x, y, 1, 1);
+                        } else {
+                            ctx.fillStyle = '#f0f0f0';
+                            ctx.fillRect(x, y, 1, 1);
+                            ctx.strokeStyle = '#cccccc';
+                            ctx.lineWidth = 0.02;
+                            ctx.strokeRect(x, y, 1, 1);
+                        }
+
+                        if (z > 14) {
+                            ctx.fillStyle = '#666666';
+                            ctx.font = `${0.35}px system-ui`;
+                            ctx.textAlign = 'center';
+                            ctx.textBaseline = 'middle';
+                            ctx.fillText(aColor, x + 0.5, y + 0.5);
+                        }
+                    }
+                }
+            }
+            ctx.restore();
+        }
+
+        function getGridCoords(clientX, clientY) {
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = clientX - rect.left;
+            const mouseY = clientY - rect.top;
+            const gridX = Math.floor((mouseX - viewTransform.x) / viewTransform.zoom);
+            const gridY = Math.floor((mouseY - viewTransform.y) / viewTransform.zoom);
+            return { x: gridX, y: gridY };
+        }
+
+        // DESKTOP INTERFACE LISTENERS
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button !== 0) return;
+            const coords = getGridCoords(e.clientX, e.clientY);
+            lastMousePos = { x: e.clientX, y: e.clientY };
+            
+            if (coords.x >= 0 && coords.x < GRID_SIZE && coords.y >= 0 && coords.y < GRID_SIZE) {
+                const idx = coords.y * GRID_SIZE + coords.x;
+                if (userGrid[idx] === 0 && answerGrid[idx] === activeColorId) {
+                    userGrid[idx] = activeColorId;
+                    saveState();
+                    if(getRemainingCounts()[activeColorId] === 0) generatePaletteUI();
+                    draw();
+                    return;
+                }
+            }
+            isDragging = true;
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            if (isDragging) {
+                const dx = e.clientX - lastMousePos.x;
+                const dy = e.clientY - lastMousePos.y;
+                viewTransform.x += dx;
+                viewTransform.y += dy;
+                draw();
+            }
+            lastMousePos = { x: e.clientX, y: e.clientY };
+        });
+
+        window.addEventListener('mouseup', () => isDragging = false);
+
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            const wheelGridX = (mouseX - viewTransform.x) / viewTransform.zoom;
+            const wheelGridY = (mouseY - viewTransform.y) / viewTransform.zoom;
+
+            const zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+            const nextZoom = viewTransform.zoom * zoomFactor;
+
+            if (nextZoom > 45 || nextZoom < 2) return;
+
+            viewTransform.zoom = nextZoom;
+            viewTransform.x = mouseX - wheelGridX * viewTransform.zoom;
+            viewTransform.y = mouseY - wheelGridY * viewTransform.zoom;
+            draw();
+        }, { passive: false });
+
+        // MOBILE/TOUCH GESTURE INSTANCES
+        canvas.addEventListener('touchstart', (e) => {
+            if (e.touches.length === 1) {
+                const touch = e.touches[0];
+                const coords = getGridCoords(touch.clientX, touch.clientY);
+                lastMousePos = { x: touch.clientX, y: touch.clientY };
+                
+                if (coords.x >= 0 && coords.x < GRID_SIZE && coords.y >= 0 && coords.y < GRID_SIZE) {
+                    const idx = coords.y * GRID_SIZE + coords.x;
+                    if (userGrid[idx] === 0 && answerGrid[idx] === activeColorId
