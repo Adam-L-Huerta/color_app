@@ -4,6 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Mixed Media Color By Number Studio</title>
+    
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    
     <style>
         :root { --bg: #121212; --ui: #1e1e1e; --accent: #00adb5; --text: #eeeeee; }
         body { margin: 0; padding: 0; background: var(--bg); font-family: system-ui, sans-serif; color: var(--text); height: 100vh; overflow: hidden; user-select: none; -webkit-user-select: none; touch-action: none; }
@@ -65,12 +69,20 @@
         <div id="loader-text" style="font-size: 18px; font-weight: bold;">Processing Image Asset Grid...</div>
     </div>
 
+    <input type="file" id="import-file" style="display: none" accept=".json" onchange="handleImport(event)">
+
     <div id="home-screen" class="screen active">
         <h1 style="margin-top: 0; font-weight: 800; letter-spacing: -0.5px;">Mixed Media Painting Studio</h1>
+        
         <div class="controls-row">
             <div class="tab-container" id="category-tabs">
                 </div>
-            <button class="btn" style="font-size: 16px; padding: 14px 28px;" onclick="launchNextIncompleteLevel()">Start Next Project</button>
+            
+            <div style="display: flex; gap: 10px;">
+                <button class="btn" style="background: #2b2b36;" onclick="exportBackup()">💾 Backup Saves</button>
+                <button class="btn" style="background: #2b2b36;" onclick="document.getElementById('import-file').click()">📂 Restore Saves</button>
+                <button class="btn" style="font-size: 16px; padding: 14px 28px; margin-left: 10px;" onclick="launchNextIncompleteLevel()">Start Next Project</button>
+            </div>
         </div>
         
         <h2 style="border-bottom: 1px solid #333; padding-bottom: 10px; margin-top: 20px; font-weight: 700;">In Progress</h2>
@@ -160,6 +172,54 @@
         // Safe Thumbnail Generator Queue
         let thumbnailQueue = [];
         let isGeneratingThumbnail = false;
+
+        // --- BACKUP & RESTORE JSON ENGINE ---
+        function exportBackup() {
+            const backupData = {};
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key.startsWith('grid_save_')) {
+                    backupData[key] = localStorage.getItem(key);
+                }
+            }
+            
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(backupData));
+            const downloadAnchorNode = document.createElement('a');
+            downloadAnchorNode.setAttribute("href",     dataStr);
+            downloadAnchorNode.setAttribute("download", "color-studio-backup.json");
+            document.body.appendChild(downloadAnchorNode); 
+            downloadAnchorNode.click();
+            downloadAnchorNode.remove();
+        }
+
+        function handleImport(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const importedData = JSON.parse(e.target.result);
+                    let importedCount = 0;
+                    
+                    for (const key in importedData) {
+                        if (key.startsWith('grid_save_')) {
+                            localStorage.setItem(key, importedData[key]);
+                            importedCount++;
+                        }
+                    }
+                    
+                    alert(`Success! Restored ${importedCount} projects from backup.`);
+                    renderPortfolioGallery(); // Refresh the home screen
+                } catch (error) {
+                    alert("Error reading backup file. Please ensure it is a valid JSON file.");
+                }
+            };
+            reader.readAsText(file);
+            
+            // Clear input so the same file can be uploaded again if needed
+            event.target.value = ''; 
+        }
 
         // Init Tabs
         function initTabs() {
@@ -1165,9 +1225,27 @@
             }
         }
 
+        // --- REQUEST PERSISTENT STORAGE ---
+        async function requestPersistentStorage() {
+            if (navigator.storage && navigator.storage.persist) {
+                const isPersisted = await navigator.storage.persisted();
+                if (!isPersisted) {
+                    const granted = await navigator.storage.persist();
+                    if (granted) {
+                        console.log("Persistent storage granted. Your saves are safe from the 7-day wipe!");
+                    } else {
+                        console.log("Persistent storage not granted by the browser.");
+                    }
+                } else {
+                    console.log("Storage is already persistent.");
+                }
+            }
+        }
+
         window.addEventListener('resize', () => { resizeCanvas(); draw(); });
         window.addEventListener('load', () => { 
             initTabs();
+            requestPersistentStorage();
             setTimeout(() => { renderPortfolioGallery(); }, 50); 
         });
     </script>
