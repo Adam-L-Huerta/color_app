@@ -173,6 +173,92 @@
         let thumbnailQueue = [];
         let isGeneratingThumbnail = false;
 
+        // --- STORAGE RESILIENCE LAYER ---
+        // iOS Safari evicts localStorage (ITP 7-day cap, low-disk purge, "Clear Website Data").
+        // Every write is mirrored into IndexedDB, which is reconciled against localStorage
+        // on every load so a partial wipe of either store self-heals from the other, and a
+        // dated backup file is auto-downloaded on a throttle so a full-origin wipe still
+        // leaves a recoverable file outside the browser's storage sandbox.
+        let idbInstance = null;
+        function idbOpen() {
+            return new Promise((resolve, reject) => {
+                if (idbInstance) return resolve(idbInstance);
+                const req = indexedDB.open('color_studio_db', 1);
+                req.onupgradeneeded = () => { req.result.createObjectStore('saves'); };
+                req.onsuccess = () => { idbInstance = req.result; resolve(idbInstance); };
+                req.onerror = () => reject(req.error);
+            });
+        }
+        async function idbSet(key, value) {
+            try {
+                const db = await idbOpen();
+                return new Promise((resolve) => {
+                    const tx = db.transaction('saves', 'readwrite');
+                    tx.objectStore('saves').put(value, key);
+                    tx.oncomplete = () => resolve(true);
+                    tx.onerror = () => resolve(false);
+                });
+            } catch (e) { return false; }
+        }
+        async function idbGetAll() {
+            try {
+                const db = await idbOpen();
+                return new Promise((resolve) => {
+                    const result = {};
+                    const tx = db.transaction('saves', 'readonly');
+                    const store = tx.objectStore('saves');
+                    const req = store.openCursor();
+                    req.onsuccess = (e) => {
+                        const cursor = e.target.result;
+                        if (cursor) { result[cursor.key] = cursor.value; cursor.continue(); }
+                        else resolve(result);
+                    };
+                    req.onerror = () => resolve(result);
+                });
+            } catch (e) { return {}; }
+        }
+        function safeLocalGet(key) {
+            try { return localStorage.getItem(key); } catch (e) { return null; }
+        }
+        function safeLocalSet(key, value) {
+            try { localStorage.setItem(key, value); return true; } catch (e) { return false; }
+        }
+        // Reconciles localStorage <-> IndexedDB on load. Whichever store still has a key wins;
+        // the value is written back into the other so both are complete again.
+        async function reconcileStorage() {
+            const idbData = await idbGetAll();
+            const localKeys = [];
+            try {
+                for (let i = 0; i < localStorage.length; i++) {
+                    const k = localStorage.key(i);
+                    if (k && k.startsWith('grid_save_')) localKeys.push(k);
+                }
+            } catch (e) {}
+
+            for (const key of localKeys) {
+                if (!(key in idbData)) idbSet(key, safeLocalGet(key));
+            }
+            for (const key in idbData) {
+                if (!localKeys.includes(key)) safeLocalSet(key, idbData[key]);
+            }
+        }
+        // Throttled auto-backup: downloads a JSON file (lands in Files/Downloads, outside
+        // the site's storage sandbox) at most once per 24h, only when there's saved work.
+        function autoBackupIfDue() {
+            let hasSaves = false;
+            try {
+                for (let i = 0; i < localStorage.length; i++) {
+                    if (localStorage.key(i).startsWith('grid_save_')) { hasSaves = true; break; }
+                }
+            } catch (e) {}
+            if (!hasSaves) return;
+
+            const last = parseInt(safeLocalGet('last_auto_backup') || '0', 10);
+            if (Date.now() - last < 24 * 60 * 60 * 1000) return;
+
+            exportBackup();
+        }
+
         // --- BACKUP & RESTORE JSON ENGINE ---
         function exportBackup() {
             const backupData = {};
@@ -182,14 +268,17 @@
                     backupData[key] = localStorage.getItem(key);
                 }
             }
-            
-            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(backupData));
+
+            const blob = new Blob([JSON.stringify(backupData)], { type: 'application/json' });
+            const blobUrl = URL.createObjectURL(blob);
             const downloadAnchorNode = document.createElement('a');
-            downloadAnchorNode.setAttribute("href",     dataStr);
+            downloadAnchorNode.setAttribute("href", blobUrl);
             downloadAnchorNode.setAttribute("download", "color-studio-backup.json");
-            document.body.appendChild(downloadAnchorNode); 
+            document.body.appendChild(downloadAnchorNode);
             downloadAnchorNode.click();
             downloadAnchorNode.remove();
+            setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
+            safeLocalSet('last_auto_backup', String(Date.now()));
         }
 
         function handleImport(event) {
@@ -204,7 +293,8 @@
                     
                     for (const key in importedData) {
                         if (key.startsWith('grid_save_')) {
-                            localStorage.setItem(key, importedData[key]);
+                            safeLocalSet(key, importedData[key]);
+                            idbSet(key, importedData[key]);
                             importedCount++;
                         }
                     }
@@ -282,18 +372,20 @@
 
         // --- SCREEN ROUTING ENGINE ---
         function returnToGallery() {
+            saveState();
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
             if (hintAnimationId) cancelAnimationFrame(hintAnimationId);
             activeHintCell = null;
             document.getElementById('game-screen').classList.remove('active');
             document.getElementById('home-screen').classList.add('active');
             renderPortfolioGallery();
+            autoBackupIfDue();
         }
 
         function launchNextIncompleteLevel() {
             let nextIncomplete = 0;
             for (let i = 0; i < TOTAL_LEVELS; i++) {
-                const saved = localStorage.getItem(`grid_save_${currentCategory}_${i}`);
+                const saved = safeLocalGet(`grid_save_${currentCategory}_${i}`);
                 if (!saved) { nextIncomplete = i; break; }
                 const coloredIndices = JSON.parse(saved);
                 if (coloredIndices.length < (GRID_SIZE * GRID_SIZE)) {
@@ -566,7 +658,7 @@
             isGeneratingThumbnail = false;
 
             for (let i = 0; i < TOTAL_LEVELS; i++) {
-                const saved = localStorage.getItem(`grid_save_${currentCategory}_${i}`);
+                const saved = safeLocalGet(`grid_save_${currentCategory}_${i}`);
                 if (!saved) continue;
 
                 const coloredIndices = JSON.parse(saved);
@@ -1200,6 +1292,7 @@
         function moveLevel(dir) {
             let next = currentLevel + dir;
             if(next >= 0 && next < TOTAL_LEVELS) {
+                saveState();
                 if (CATEGORIES[currentCategory].type === 'photo') {
                     document.getElementById('loader-overlay').style.display = 'flex';
                 }
@@ -1222,11 +1315,14 @@
             for(let i=0; i<userGrid.length; i++) {
                 if(userGrid[i] !== 0) coloredCoords.push(i);
             }
-            localStorage.setItem(`grid_save_${currentCategory}_${currentLevel}`, JSON.stringify(coloredCoords));
+            const key = `grid_save_${currentCategory}_${currentLevel}`;
+            const payload = JSON.stringify(coloredCoords);
+            safeLocalSet(key, payload);
+            idbSet(key, payload);
         }
 
         function loadState() {
-            const data = localStorage.getItem(`grid_save_${currentCategory}_${currentLevel}`);
+            const data = safeLocalGet(`grid_save_${currentCategory}_${currentLevel}`);
             if(!data) return;
             const coloredIndices = JSON.parse(data);
             for(let i=0; i<coloredIndices.length; i++) {
@@ -1256,8 +1352,17 @@
         window.addEventListener('load', () => { 
             initTabs();
             requestPersistentStorage();
-            setTimeout(() => { renderPortfolioGallery(); }, 50); 
+            reconcileStorage().finally(() => {
+                setTimeout(() => { renderPortfolioGallery(); }, 50); 
+            });
         });
+
+        // iOS can suspend or kill a backgrounded Safari tab without firing beforeunload.
+        // visibilitychange + pagehide are the reliable signals to flush the current stroke.
+        document.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') saveState();
+        });
+        window.addEventListener('pagehide', () => { saveState(); });
     </script>
 </body>
 </html>
