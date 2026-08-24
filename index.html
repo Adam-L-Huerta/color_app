@@ -40,6 +40,10 @@
         .btn:hover { filter: brightness(1.1); }
         .btn:disabled { background: #444; color: #777; cursor: not-allowed; filter: none; }
         .nav-btn { touch-action: manipulation; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+
+        /* Save Indicator Notification Styling */
+        .save-indicator { display: inline-block; margin-left: 12px; font-size: 13px; font-weight: 600; color: #2ecc71; opacity: 0; transition: opacity 0.3s ease; pointer-events: none; }
+        .save-indicator.visible { opacity: 1; }
         
         #main-layout { flex: 1; display: flex; position: relative; background: #151515; overflow: hidden; width: 100%; }
         #canvas-container { flex: 1; position: relative; cursor: grab; width: 100%; height: 100%; }
@@ -96,8 +100,9 @@
 
     <div id="game-screen" class="screen">
         <div id="header">
-            <div style="font-size: 16px; font-weight: bold; flex-shrink: 0;">
+            <div style="font-size: 16px; font-weight: bold; flex-shrink: 0; display: flex; align-items: center;">
                 <span id="level-type-label">Mandala</span> #<span id="img-index">1</span> / <span id="total-index">5000</span>
+                <span id="save-indicator" class="save-indicator">Saved ✓</span>
             </div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
                 <button type="button" class="btn nav-btn" id="gallery-btn" style="background: #3a3a40;">← Gallery</button>
@@ -154,19 +159,12 @@
         let lastMousePos = { x: 0, y: 0 };
         let touchStartDist = 0;
 
-        // canvas.width/height become device-pixel dimensions once resizeCanvas() applies
-        // devicePixelRatio scaling (for crisp rendering on Retina/iPad screens). All
-        // interaction math (viewTransform, getGridCoords, touch/mouse) stays in CSS-pixel
-        // logical space, so anything that needs the on-screen size uses these instead.
         let canvasCSSWidth = 0;
         let canvasCSSHeight = 0;
 
-        // Bumped every time a new level load starts. A pending async photo generation
-        // checks this before applying its result, so a slow/late response from a level
-        // the user has already navigated away from is discarded instead of clobbering
-        // whatever's on screen now.
         let levelLoadToken = 0;
         let levelLoadTimer = null;
+        let saveTimer = null;
 
         let currentSymmetryArms = 12;
         let currentFrequencyMod = 1.0;
@@ -199,13 +197,20 @@
                 }
             }
             
-            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(backupData));
+            const jsonString = JSON.stringify(backupData);
+            const blob = new Blob([jsonString], { type: 'application/json' });
+            const blobUrl = URL.createObjectURL(blob);
+            
             const downloadAnchorNode = document.createElement('a');
-            downloadAnchorNode.setAttribute("href",     dataStr);
+            downloadAnchorNode.setAttribute("href", blobUrl);
             downloadAnchorNode.setAttribute("download", "color-studio-backup.json");
             document.body.appendChild(downloadAnchorNode); 
             downloadAnchorNode.click();
             downloadAnchorNode.remove();
+
+            setTimeout(() => {
+                URL.revokeObjectURL(blobUrl);
+            }, 1000);
         }
 
         function handleImport(event) {
@@ -226,14 +231,12 @@
                     }
                     
                     alert(`Success! Restored ${importedCount} projects from backup.`);
-                    renderPortfolioGallery(); // Refresh the home screen
+                    renderPortfolioGallery();
                 } catch (error) {
                     alert("Error reading backup file. Please ensure it is a valid JSON file.");
                 }
             };
             reader.readAsText(file);
-            
-            // Clear input so the same file can be uploaded again if needed
             event.target.value = ''; 
         }
 
@@ -285,13 +288,13 @@
             if (!document.fullscreenElement && !document.webkitFullscreenElement) {
                 if (document.documentElement.requestFullscreen) {
                     document.documentElement.requestFullscreen();
-                } else if (document.documentElement.webkitRequestFullscreen) { /* Safari */
+                } else if (document.documentElement.webkitRequestFullscreen) {
                     document.documentElement.webkitRequestFullscreen();
                 }
             } else {
                 if (document.exitFullscreen) {
                     document.exitFullscreen();
-                } else if (document.webkitExitFullscreen) { /* Safari */
+                } else if (document.webkitExitFullscreen) {
                     document.webkitExitFullscreen();
                 }
             }
@@ -342,10 +345,6 @@
             }, 50);
         }
 
-        // Bails out of whatever level load is in flight (e.g. a slow/blocked image
-        // fetch) and returns to the gallery. The loader overlay covers the whole
-        // screen, so without this a stuck fetch could make the app look totally
-        // unresponsive with no way out.
         function cancelPendingLevelLoad() {
             if (levelLoadTimer) { clearTimeout(levelLoadTimer); levelLoadTimer = null; }
             levelLoadToken++;
@@ -412,7 +411,7 @@
             } else {
                 const seedOffset = CATEGORIES[currentCategory].seedOffset;
                 generatePhotoData(currentLevel + seedOffset, () => {
-                    if (myLoadToken !== levelLoadToken) return; // stale - superseded by a newer load or a Cancel
+                    if (myLoadToken !== levelLoadToken) return;
                     document.getElementById('loader-overlay').style.display = 'none';
                     finalizeLevelLoad();
                 }, undefined, undefined, () => myLoadToken !== levelLoadToken);
@@ -429,9 +428,6 @@
         }
 
         // --- MATH PROCEDURAL EQUATIONS ENGINE ---
-        // If `target` is passed, results are written into target.{colorPalette,rgbPaletteParsed,
-        // answerGrid,userGrid} instead of the live game globals. This is what lets background
-        // thumbnail generation run without corrupting whatever level is currently on screen.
         function generateDeterministicData(seed, target) {
             let currentSeed = (seed + 1) * 123456789;
             function nextRandom() {
@@ -512,25 +508,15 @@
         }
 
         // --- MEDIAN CUT ENGINE WITH BLACK & WHITE FILTER ---
-        // If `target` is passed, results are written into target.{colorPalette,rgbPaletteParsed,
-        // answerGrid,userGrid} instead of the live game globals (see generateDeterministicData).
-        // Rerolls (grayscale image, load error, blocked canvas read, or a timed-out fetch on a
-        // slow/blocked network) are capped and time-bounded; past that this falls back to the
-        // procedural math generator so `callback` always fires within a few seconds instead of
-        // leaving the loader (which covers the whole screen) up indefinitely.
         const PHOTO_GEN_MAX_RETRIES = 3;
         const PHOTO_GEN_TIMEOUT_MS = 4000;
         function generatePhotoData(seed, callback, target, retryCount, isStaleCheck) {
             retryCount = retryCount || 0;
 
-            // For a live (non-thumbnail) load, bail entirely if a newer level load has
-            // since started - covers every exit path: give-up-fallback, retry, and the
-            // final successful write below.
             const isStale = () => !target && isStaleCheck && isStaleCheck();
 
             const giveUpAndFallBack = () => {
                 if (isStale()) return;
-                console.log("Photo generation failed repeatedly. Falling back to a procedural pattern.");
                 generateDeterministicData(seed, target);
                 if (callback) callback();
             };
@@ -549,14 +535,11 @@
             img.crossOrigin = "anonymous";
             img.src = `https://picsum.photos/seed/${seed}/640/640`;
 
-            // Image elements have no built-in load timeout - a blocked/filtered domain can
-            // hang indefinitely rather than firing onerror. Force a decision after a few seconds.
             const timeoutId = setTimeout(() => {
                 if (settled) return;
                 settled = true;
                 img.onload = null;
                 img.onerror = null;
-                console.log("Image load timed out. Retrying...");
                 retryOrGiveUp(seed + 55);
             }, PHOTO_GEN_TIMEOUT_MS);
             
@@ -576,9 +559,6 @@
                     tempCtx.drawImage(img, 0, 0, GRID_SIZE, GRID_SIZE);
                     bytes = tempCtx.getImageData(0, 0, GRID_SIZE, GRID_SIZE).data;
                 } catch (err) {
-                    // Tainted canvas (CORS) or other read failure - can't reroll on the same
-                    // failure mode indefinitely, so treat it like any other load failure.
-                    console.log("Could not read image data (CORS/tainted canvas). Retrying...", err);
                     retryOrGiveUp(seed + 99);
                     return;
                 }
@@ -591,7 +571,6 @@
                 }
                 
                 if (colorPixelCount < totalPixels * 0.10) {
-                    console.log("Grayscale image detected. Rerolling with new seed...");
                     retryOrGiveUp(seed + 31415);
                     return;
                 }
@@ -694,7 +673,7 @@
                     localAnswerGrid[i / 4] = closestId;
                 }
 
-                if (isStale()) return; // a newer level load has since started - discard this result
+                if (isStale()) return; 
 
                 if (target) {
                     target.colorPalette = palette;
@@ -800,10 +779,6 @@
                 return;
             }
 
-            // Scratch buffers, isolated from the live game state (answerGrid/userGrid/
-            // colorPalette/rgbPaletteParsed). Without this, a thumbnail generation that's
-            // still in flight when the user opens a level would overwrite the level they're
-            // actively painting as soon as it resolved.
             const target = { colorPalette: null, rgbPaletteParsed: null, answerGrid: null, userGrid: null };
 
             const renderCanvas = () => {
@@ -1106,36 +1081,26 @@
                             ctx.fillStyle = colorPalette[uColor];
                             ctx.fillRect(x, y, 1.05, 1.05); 
                             
-                            // Re-apply stroke grid lines when zoomed in
                             if (z > 4 && !isLevelComplete) {
                                 ctx.lineWidth = 1 / z;
                                 ctx.strokeStyle = 'rgba(0,0,0,0.15)';
                                 ctx.strokeRect(x, y, 1, 1);
                             }
                         } else if (z > 4) { 
-                            // Check if this uncolored square matches the active color palette selection
                             if (aColor === activeColorId) {
-                                // Target Active Color: Turn it a darker, high-contrast grey
                                 ctx.fillStyle = '#b0b0b0'; 
                                 ctx.fillRect(x, y, 1.05, 1.05);
-                                
-                                // Text color for active squares (White text over dark grey background)
                                 ctx.fillStyle = '#ffffff';
                             } else {
-                                // Inactive Colors: Keep them pure white
                                 ctx.fillStyle = '#ffffff';
                                 ctx.fillRect(x, y, 1.05, 1.05);
-                                
-                                // Text color for inactive squares (Dark text over white background)
                                 ctx.fillStyle = '#888888';
                             }
                             
-                            // Draw the subtle grid alignment boundaries
                             ctx.lineWidth = 1 / z;
                             ctx.strokeStyle = '#ddd';
                             ctx.strokeRect(x, y, 1, 1);
 
-                            // Render the target color ID number string index
                             ctx.font = '0.45px Arial';
                             ctx.textAlign = 'center';
                             ctx.textBaseline = 'middle';
@@ -1194,17 +1159,14 @@
             const coords = getGridCoords(e.clientX, e.clientY);
             lastMousePos = { x: e.clientX, y: e.clientY };
             
-            // Explicit panning via Spacebar, Right-Click, or Middle-Click
             if (e.button === 2 || e.button === 1 || isSpacePressed) {
                 isPanning = true;
                 return;
             }
 
-            // Normal Left Click Handler (Intelligent Input)
             if (e.button === 0) {
                 if (coords.x >= 0 && coords.x < GRID_SIZE && coords.y >= 0 && coords.y < GRID_SIZE) {
                     const idx = coords.y * GRID_SIZE + coords.x;
-                    // If target is valid and uncolored, start DRAGGING (painting)
                     if (userGrid[idx] === 0 && answerGrid[idx] === activeColorId) {
                         isDragging = true;
                         userGrid[idx] = activeColorId;
@@ -1213,11 +1175,9 @@
                         checkCompletionStatus();
                         draw();
                     } else {
-                        // Intelligent Fallback: Missed the color, already painted, etc -> Start PANNING
                         isPanning = true;
                     }
                 } else {
-                    // Clicked out of bounds -> Start PANNING
                     isPanning = true; 
                 }
             }
@@ -1271,9 +1231,6 @@
             draw();
         }, { passive: false });
 
-        // Firefox (Linux/Windows) delivers trackpad pinch as MozMagnifyGesture*
-        // events, not wheel events. Without this, pinch falls through to
-        // Firefox's native whole-page zoom instead of the canvas.
         canvas.addEventListener('MozMagnifyGestureStart', handlePinchZoom, { passive: false });
         canvas.addEventListener('MozMagnifyGestureUpdate', handlePinchZoom, { passive: false });
         canvas.addEventListener('MozMagnifyGestureEnd', (e) => e.preventDefault(), { passive: false });
@@ -1296,7 +1253,6 @@
             draw();
         }
 
-        // Touch Input - Critical: { passive: false } and e.preventDefault() block browser scrolling.
         canvas.addEventListener('touchstart', (e) => {
             e.preventDefault(); 
             if (e.touches.length === 1) {
@@ -1314,7 +1270,6 @@
                         checkCompletionStatus();
                         draw();
                     } else {
-                        // Intelligent Fallback: 1-finger drag pans if clicking unpaintable space
                         isPanning = true;
                     }
                 } else {
@@ -1324,12 +1279,10 @@
                 isDragging = false;
                 isPanning = true;
                 
-                // Track initial distance for zoom scaling
                 const dx = e.touches[0].clientX - e.touches[1].clientX;
                 const dy = e.touches[0].clientY - e.touches[1].clientY;
                 touchStartDist = Math.hypot(dx, dy);
                 
-                // Track initial midpoint for panning calculation
                 lastMousePos.x = (e.touches[0].clientX + e.touches[1].clientX) / 2;
                 lastMousePos.y = (e.touches[0].clientY + e.touches[1].clientY) / 2;
             }
@@ -1351,22 +1304,18 @@
                 }
                 lastMousePos = { x: touch.clientX, y: touch.clientY };
             } else if (isPanning && e.touches.length === 1) {
-                // Allows 1-finger panning if intelligently triggered
                 const touch = e.touches[0];
                 viewTransform.x += (touch.clientX - lastMousePos.x);
                 viewTransform.y += (touch.clientY - lastMousePos.y);
                 lastMousePos = { x: touch.clientX, y: touch.clientY };
                 draw();
             } else if (isPanning && e.touches.length === 2) {
-                // Calculate current touch midpoint
                 const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
                 const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
                 
-                // Process Pan (Translation)
                 viewTransform.x += (midX - lastMousePos.x);
                 viewTransform.y += (midY - lastMousePos.y);
 
-                // Process Zoom
                 const dx = e.touches[0].clientX - e.touches[1].clientX;
                 const dy = e.touches[0].clientY - e.touches[1].clientY;
                 const dist = Math.hypot(dx, dy);
@@ -1375,13 +1324,11 @@
                 const nextZoom = viewTransform.zoom * zoomFactor;
                 
                 if (nextZoom <= 50 && nextZoom >= 1.5) {
-                    // Temporarily calculate world coord underneath the midpoint with old zoom
                     const worldX = (midX - viewTransform.x) / viewTransform.zoom;
                     const worldY = (midY - viewTransform.y) / viewTransform.zoom;
                     
                     viewTransform.zoom = nextZoom;
                     
-                    // Adjust view bounds so world coord remains exactly under fingers
                     viewTransform.x = midX - worldX * viewTransform.zoom;
                     viewTransform.y = midY - worldY * viewTransform.zoom;
                 }
@@ -1399,9 +1346,6 @@
                 isDragging = false;
                 isPanning = false;
             } else if (e.touches.length === 1) {
-                // Lifting one finger out of a 2-finger pinch/pan shouldn't end the whole
-                // gesture - degrade to a 1-finger pan instead of forcing the user to
-                // re-touch to continue.
                 isDragging = false;
                 isPanning = true;
                 lastMousePos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -1441,6 +1385,19 @@
             canvas.style.height = canvasCSSHeight + 'px';
         }
 
+        // --- AUTO-SAVE NOTIFICATION TRIGGER ---
+        function triggerSaveNotification() {
+            const indicator = document.getElementById('save-indicator');
+            if (!indicator) return;
+            
+            indicator.classList.add('visible');
+            
+            if (saveTimer) clearTimeout(saveTimer);
+            saveTimer = setTimeout(() => {
+                indicator.classList.remove('visible');
+            }, 1200);
+        }
+
         function saveState() {
             const gameScreen = document.getElementById('game-screen');
             if (!gameScreen || !gameScreen.classList.contains('active') || isLevelComplete) return;
@@ -1450,6 +1407,9 @@
                 if(userGrid[i] !== 0) coloredCoords.push(i);
             }
             localStorage.setItem(`grid_save_${currentCategory}_${currentLevel}`, JSON.stringify(coloredCoords));
+            
+            // Trigger auto-save visual notification
+            triggerSaveNotification();
         }
 
         function loadState() {
@@ -1467,21 +1427,10 @@
             if (navigator.storage && navigator.storage.persist) {
                 const isPersisted = await navigator.storage.persisted();
                 if (!isPersisted) {
-                    const granted = await navigator.storage.persist();
-                    if (granted) {
-                        console.log("Persistent storage granted. Your saves are safe from the 7-day wipe!");
-                    } else {
-                        console.log("Persistent storage not granted by the browser.");
-                    }
-                } else {
-                    console.log("Storage is already persistent.");
+                    await navigator.storage.persist();
                 }
             }
         }
-
-        // iOS Safari fires native gesturestart/gesturechange page-zoom on 2-finger
-        // touch regardless of the viewport meta tag. Block it so touchstart/touchmove
-        // pinch-zoom logic above receives the events instead.
 
         window.addEventListener('resize', () => { resizeCanvas(); draw(); });
         window.addEventListener('load', () => {
