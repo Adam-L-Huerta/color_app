@@ -152,6 +152,13 @@
         let lastMousePos = { x: 0, y: 0 };
         let touchStartDist = 0;
 
+        // canvas.width/height become device-pixel dimensions once resizeCanvas() applies
+        // devicePixelRatio scaling (for crisp rendering on Retina/iPad screens). All
+        // interaction math (viewTransform, getGridCoords, touch/mouse) stays in CSS-pixel
+        // logical space, so anything that needs the on-screen size uses these instead.
+        let canvasCSSWidth = 0;
+        let canvasCSSHeight = 0;
+
         let currentSymmetryArms = 12;
         let currentFrequencyMod = 1.0;
         let currentRingDensity = 1.0;
@@ -173,92 +180,6 @@
         let thumbnailQueue = [];
         let isGeneratingThumbnail = false;
 
-        // --- STORAGE RESILIENCE LAYER ---
-        // iOS Safari evicts localStorage (ITP 7-day cap, low-disk purge, "Clear Website Data").
-        // Every write is mirrored into IndexedDB, which is reconciled against localStorage
-        // on every load so a partial wipe of either store self-heals from the other, and a
-        // dated backup file is auto-downloaded on a throttle so a full-origin wipe still
-        // leaves a recoverable file outside the browser's storage sandbox.
-        let idbInstance = null;
-        function idbOpen() {
-            return new Promise((resolve, reject) => {
-                if (idbInstance) return resolve(idbInstance);
-                const req = indexedDB.open('color_studio_db', 1);
-                req.onupgradeneeded = () => { req.result.createObjectStore('saves'); };
-                req.onsuccess = () => { idbInstance = req.result; resolve(idbInstance); };
-                req.onerror = () => reject(req.error);
-            });
-        }
-        async function idbSet(key, value) {
-            try {
-                const db = await idbOpen();
-                return new Promise((resolve) => {
-                    const tx = db.transaction('saves', 'readwrite');
-                    tx.objectStore('saves').put(value, key);
-                    tx.oncomplete = () => resolve(true);
-                    tx.onerror = () => resolve(false);
-                });
-            } catch (e) { return false; }
-        }
-        async function idbGetAll() {
-            try {
-                const db = await idbOpen();
-                return new Promise((resolve) => {
-                    const result = {};
-                    const tx = db.transaction('saves', 'readonly');
-                    const store = tx.objectStore('saves');
-                    const req = store.openCursor();
-                    req.onsuccess = (e) => {
-                        const cursor = e.target.result;
-                        if (cursor) { result[cursor.key] = cursor.value; cursor.continue(); }
-                        else resolve(result);
-                    };
-                    req.onerror = () => resolve(result);
-                });
-            } catch (e) { return {}; }
-        }
-        function safeLocalGet(key) {
-            try { return localStorage.getItem(key); } catch (e) { return null; }
-        }
-        function safeLocalSet(key, value) {
-            try { localStorage.setItem(key, value); return true; } catch (e) { return false; }
-        }
-        // Reconciles localStorage <-> IndexedDB on load. Whichever store still has a key wins;
-        // the value is written back into the other so both are complete again.
-        async function reconcileStorage() {
-            const idbData = await idbGetAll();
-            const localKeys = [];
-            try {
-                for (let i = 0; i < localStorage.length; i++) {
-                    const k = localStorage.key(i);
-                    if (k && k.startsWith('grid_save_')) localKeys.push(k);
-                }
-            } catch (e) {}
-
-            for (const key of localKeys) {
-                if (!(key in idbData)) idbSet(key, safeLocalGet(key));
-            }
-            for (const key in idbData) {
-                if (!localKeys.includes(key)) safeLocalSet(key, idbData[key]);
-            }
-        }
-        // Throttled auto-backup: downloads a JSON file (lands in Files/Downloads, outside
-        // the site's storage sandbox) at most once per 24h, only when there's saved work.
-        function autoBackupIfDue() {
-            let hasSaves = false;
-            try {
-                for (let i = 0; i < localStorage.length; i++) {
-                    if (localStorage.key(i).startsWith('grid_save_')) { hasSaves = true; break; }
-                }
-            } catch (e) {}
-            if (!hasSaves) return;
-
-            const last = parseInt(safeLocalGet('last_auto_backup') || '0', 10);
-            if (Date.now() - last < 24 * 60 * 60 * 1000) return;
-
-            exportBackup();
-        }
-
         // --- BACKUP & RESTORE JSON ENGINE ---
         function exportBackup() {
             const backupData = {};
@@ -268,17 +189,14 @@
                     backupData[key] = localStorage.getItem(key);
                 }
             }
-
-            const blob = new Blob([JSON.stringify(backupData)], { type: 'application/json' });
-            const blobUrl = URL.createObjectURL(blob);
+            
+            const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(backupData));
             const downloadAnchorNode = document.createElement('a');
-            downloadAnchorNode.setAttribute("href", blobUrl);
+            downloadAnchorNode.setAttribute("href",     dataStr);
             downloadAnchorNode.setAttribute("download", "color-studio-backup.json");
-            document.body.appendChild(downloadAnchorNode);
+            document.body.appendChild(downloadAnchorNode); 
             downloadAnchorNode.click();
             downloadAnchorNode.remove();
-            setTimeout(() => URL.revokeObjectURL(blobUrl), 5000);
-            safeLocalSet('last_auto_backup', String(Date.now()));
         }
 
         function handleImport(event) {
@@ -293,8 +211,7 @@
                     
                     for (const key in importedData) {
                         if (key.startsWith('grid_save_')) {
-                            safeLocalSet(key, importedData[key]);
-                            idbSet(key, importedData[key]);
+                            localStorage.setItem(key, importedData[key]);
                             importedCount++;
                         }
                     }
@@ -379,13 +296,12 @@
             document.getElementById('game-screen').classList.remove('active');
             document.getElementById('home-screen').classList.add('active');
             renderPortfolioGallery();
-            autoBackupIfDue();
         }
 
         function launchNextIncompleteLevel() {
             let nextIncomplete = 0;
             for (let i = 0; i < TOTAL_LEVELS; i++) {
-                const saved = safeLocalGet(`grid_save_${currentCategory}_${i}`);
+                const saved = localStorage.getItem(`grid_save_${currentCategory}_${i}`);
                 if (!saved) { nextIncomplete = i; break; }
                 const coloredIndices = JSON.parse(saved);
                 if (coloredIndices.length < (GRID_SIZE * GRID_SIZE)) {
@@ -448,54 +364,76 @@
         }
 
         // --- MATH PROCEDURAL EQUATIONS ENGINE ---
-        function generateDeterministicData(seed) {
+        // If `target` is passed, results are written into target.{colorPalette,rgbPaletteParsed,
+        // answerGrid,userGrid} instead of the live game globals. This is what lets background
+        // thumbnail generation run without corrupting whatever level is currently on screen.
+        function generateDeterministicData(seed, target) {
             let currentSeed = (seed + 1) * 123456789;
             function nextRandom() {
                 currentSeed = (currentSeed * 1664525 + 1013904223) % 4294967296;
                 return currentSeed / 4294967296;
             }
 
-            colorPalette = ['#e0e0e0'];
-            rgbPaletteParsed = [[224, 224, 224]]; 
+            const palette = ['#e0e0e0'];
+            const rgbParsed = [[224, 224, 224]];
 
             for (let i = 1; i <= TARGET_COLORS_COUNT; i++) {
                 let r = Math.floor(nextRandom() * 190) + 40;
                 let g = Math.floor(nextRandom() * 190) + 40;
                 let b = Math.floor(nextRandom() * 190) + 40;
-                colorPalette.push(`rgb(${r},${g},${b})`);
-                rgbPaletteParsed.push([r, g, b]);
+                palette.push(`rgb(${r},${g},${b})`);
+                rgbParsed.push([r, g, b]);
             }
 
-            userGrid.fill(0);
             const centerX = GRID_SIZE / 2;
             const centerY = GRID_SIZE / 2;
-            
-            const symmetryOptions = [8, 12, 16, 20, 24];
-            currentSymmetryArms = symmetryOptions[Math.floor(nextRandom() * symmetryOptions.length)];
-            currentFrequencyMod = 0.5 + nextRandom() * 1.5;
-            currentRingDensity = 0.8 + nextRandom() * 1.2;
 
+            const symmetryOptions = [8, 12, 16, 20, 24];
+            const arms = symmetryOptions[Math.floor(nextRandom() * symmetryOptions.length)];
+            const freqMod = 0.5 + nextRandom() * 1.5;
+            const ringDensity = 0.8 + nextRandom() * 1.2;
+
+            const localAnswerGrid = new Uint8Array(GRID_SIZE * GRID_SIZE);
             for (let y = 0; y < GRID_SIZE; y++) {
                 for (let x = 0; x < GRID_SIZE; x++) {
-                    answerGrid[y * GRID_SIZE + x] = evaluateMathAtPoint(x, y, centerX, centerY);
+                    localAnswerGrid[y * GRID_SIZE + x] = evaluateMathAtPoint(x, y, centerX, centerY, arms, freqMod, ringDensity);
                 }
+            }
+
+            if (target) {
+                target.colorPalette = palette;
+                target.rgbPaletteParsed = rgbParsed;
+                target.answerGrid = localAnswerGrid;
+                target.userGrid = new Uint8Array(GRID_SIZE * GRID_SIZE);
+            } else {
+                colorPalette = palette;
+                rgbPaletteParsed = rgbParsed;
+                answerGrid.set(localAnswerGrid);
+                userGrid.fill(0);
+                currentSymmetryArms = arms;
+                currentFrequencyMod = freqMod;
+                currentRingDensity = ringDensity;
             }
         }
 
-        function evaluateMathAtPoint(x, y, centerX, centerY) {
+        function evaluateMathAtPoint(x, y, centerX, centerY, arms, freqMod, ringDensity) {
+            arms = arms !== undefined ? arms : currentSymmetryArms;
+            freqMod = freqMod !== undefined ? freqMod : currentFrequencyMod;
+            ringDensity = ringDensity !== undefined ? ringDensity : currentRingDensity;
+
             let dx = x - centerX;
             let dy = y - centerY;
             let r = Math.sqrt(dx * dx + dy * dy);
             let angle = Math.atan2(dy, dx);
             if (r > GRID_SIZE / 2 - 2) return 1; 
 
-            let sector = 2 * Math.PI / currentSymmetryArms;
+            let sector = 2 * Math.PI / arms;
             let localAngle = angle % sector;
             if (localAngle < 0) localAngle += sector;
             if (localAngle > sector / 2) localAngle = sector - localAngle;
 
-            let ringPattern = Math.sin(r * currentRingDensity * 0.4);
-            let petalPattern = Math.cos(localAngle * currentSymmetryArms * currentFrequencyMod) * Math.sin(r * 0.2);
+            let ringPattern = Math.sin(r * ringDensity * 0.4);
+            let petalPattern = Math.cos(localAngle * arms * freqMod) * Math.sin(r * 0.2);
             let geometricValue = ringPattern * 0.6 + petalPattern * 0.5 + Math.cos(r * 0.1 - localAngle * 2.0) * 0.3;
             
             let normalized = (geometricValue + 1.4) / 2.8;
@@ -509,21 +447,51 @@
         }
 
         // --- MEDIAN CUT ENGINE WITH BLACK & WHITE FILTER ---
-        function generatePhotoData(seed, callback) {
+        // If `target` is passed, results are written into target.{colorPalette,rgbPaletteParsed,
+        // answerGrid,userGrid} instead of the live game globals (see generateDeterministicData).
+        // Rerolls (grayscale image, load error, blocked canvas read) are capped; past the cap
+        // this falls back to the procedural math generator so `callback` always eventually fires
+        // instead of leaving the loader spinning forever on a bad network.
+        const PHOTO_GEN_MAX_RETRIES = 8;
+        function generatePhotoData(seed, callback, target, retryCount) {
+            retryCount = retryCount || 0;
+
+            const giveUpAndFallBack = () => {
+                console.log("Photo generation failed repeatedly. Falling back to a procedural pattern.");
+                generateDeterministicData(seed, target);
+                if (callback) callback();
+            };
+
+            const retryOrGiveUp = (nextSeed) => {
+                if (retryCount >= PHOTO_GEN_MAX_RETRIES) {
+                    giveUpAndFallBack();
+                    return;
+                }
+                generatePhotoData(nextSeed, callback, target, retryCount + 1);
+            };
+
             const img = new Image();
             img.crossOrigin = "anonymous";
             img.src = `https://picsum.photos/seed/${seed}/640/640`;
             
             img.onload = () => {
-                const tempCanvas = document.createElement('canvas');
-                const tempCtx = tempCanvas.getContext('2d');
-                tempCanvas.width = GRID_SIZE;
-                tempCanvas.height = GRID_SIZE;
-                
-                tempCtx.imageSmoothingEnabled = true;
-                tempCtx.drawImage(img, 0, 0, GRID_SIZE, GRID_SIZE);
-                const imgData = tempCtx.getImageData(0, 0, GRID_SIZE, GRID_SIZE);
-                const bytes = imgData.data;
+                let bytes;
+                try {
+                    const tempCanvas = document.createElement('canvas');
+                    const tempCtx = tempCanvas.getContext('2d');
+                    tempCanvas.width = GRID_SIZE;
+                    tempCanvas.height = GRID_SIZE;
+
+                    tempCtx.imageSmoothingEnabled = true;
+                    tempCtx.drawImage(img, 0, 0, GRID_SIZE, GRID_SIZE);
+                    bytes = tempCtx.getImageData(0, 0, GRID_SIZE, GRID_SIZE).data;
+                } catch (err) {
+                    // Tainted canvas (CORS) or other read failure - can't reroll on the same
+                    // failure mode indefinitely, so treat it like any other load failure.
+                    console.log("Could not read image data (CORS/tainted canvas). Retrying...", err);
+                    retryOrGiveUp(seed + 99);
+                    return;
+                }
                 
                 let colorPixelCount = 0;
                 const totalPixels = bytes.length / 4;
@@ -534,7 +502,7 @@
                 
                 if (colorPixelCount < totalPixels * 0.10) {
                     console.log("Grayscale image detected. Rerolling with new seed...");
-                    generatePhotoData(seed + 31415, callback);
+                    retryOrGiveUp(seed + 31415);
                     return;
                 }
 
@@ -593,9 +561,8 @@
                     buckets.splice(splitIndex, 1, bucketA, bucketB);
                 }
                 
-                colorPalette = ['#e0e0e0'];
-                rgbPaletteParsed = [[224, 224, 224]];
-                userGrid.fill(0);
+                const palette = ['#e0e0e0'];
+                const rgbParsed = [[224, 224, 224]];
                 
                 for (let i = 0; i < buckets.length; i++) {
                     let rSum = 0, gSum = 0, bSum = 0;
@@ -609,15 +576,16 @@
                     let g = Math.round(gSum / len);
                     let b = Math.round(bSum / len);
                     
-                    rgbPaletteParsed.push([r, g, b]);
-                    colorPalette.push(`rgb(${r},${g},${b})`);
+                    rgbParsed.push([r, g, b]);
+                    palette.push(`rgb(${r},${g},${b})`);
                 }
                 
-                while (rgbPaletteParsed.length <= TARGET_COLORS_COUNT) {
-                    rgbPaletteParsed.push([120, 120, 120]);
-                    colorPalette.push(`rgb(120,120,120)`);
+                while (rgbParsed.length <= TARGET_COLORS_COUNT) {
+                    rgbParsed.push([120, 120, 120]);
+                    palette.push(`rgb(120,120,120)`);
                 }
-                
+
+                const localAnswerGrid = new Uint8Array(GRID_SIZE * GRID_SIZE);
                 for (let i = 0; i < bytes.length; i += 4) {
                     let r = bytes[i];
                     let g = bytes[i+1];
@@ -625,22 +593,34 @@
                     let closestId = 1;
                     let minDistance = Infinity;
                     
-                    for (let cId = 1; cId < rgbPaletteParsed.length; cId++) {
-                        const pal = rgbPaletteParsed[cId];
+                    for (let cId = 1; cId < rgbParsed.length; cId++) {
+                        const pal = rgbParsed[cId];
                         let distance = Math.pow(r - pal[0], 2) + Math.pow(g - pal[1], 2) + Math.pow(b - pal[2], 2);
                         if (distance < minDistance) {
                             minDistance = distance;
                             closestId = cId;
                         }
                     }
-                    answerGrid[i / 4] = closestId;
+                    localAnswerGrid[i / 4] = closestId;
+                }
+
+                if (target) {
+                    target.colorPalette = palette;
+                    target.rgbPaletteParsed = rgbParsed;
+                    target.answerGrid = localAnswerGrid;
+                    target.userGrid = new Uint8Array(GRID_SIZE * GRID_SIZE);
+                } else {
+                    colorPalette = palette;
+                    rgbPaletteParsed = rgbParsed;
+                    answerGrid.set(localAnswerGrid);
+                    userGrid.fill(0);
                 }
                 
                 if (callback) callback();
             };
             
             img.onerror = () => {
-                generatePhotoData(seed + 99, callback);
+                retryOrGiveUp(seed + 99);
             };
         }
 
@@ -658,7 +638,7 @@
             isGeneratingThumbnail = false;
 
             for (let i = 0; i < TOTAL_LEVELS; i++) {
-                const saved = safeLocalGet(`grid_save_${currentCategory}_${i}`);
+                const saved = localStorage.getItem(`grid_save_${currentCategory}_${i}`);
                 if (!saved) continue;
 
                 const coloredIndices = JSON.parse(saved);
@@ -725,15 +705,23 @@
                 return;
             }
 
+            // Scratch buffers, isolated from the live game state (answerGrid/userGrid/
+            // colorPalette/rgbPaletteParsed). Without this, a thumbnail generation that's
+            // still in flight when the user opens a level would overwrite the level they're
+            // actively painting as soon as it resolved.
+            const target = { colorPalette: null, rgbPaletteParsed: null, answerGrid: null, userGrid: null };
+
             const renderCanvas = () => {
                 const tCtx = task.canvas.getContext('2d');
                 const imgData = tCtx.createImageData(360, 360);
                 const stepFactor = GRID_SIZE / 360;
+                const genAnswerGrid = target.answerGrid;
+                const genPalette = target.rgbPaletteParsed;
 
                 let localUserGrid = null;
                 if (!task.isComplete) {
                     localUserGrid = new Uint8Array(GRID_SIZE * GRID_SIZE);
-                    for(let idx of task.coloredIndices) localUserGrid[idx] = answerGrid[idx];
+                    for(let idx of task.coloredIndices) localUserGrid[idx] = genAnswerGrid[idx];
                 }
 
                 for (let y = 0; y < 360; y++) {
@@ -743,8 +731,8 @@
                         const srcX = Math.floor(x * stepFactor);
                         const gridIdx = srcY * GRID_SIZE + srcX;
                         
-                        let colorId = task.isComplete ? answerGrid[gridIdx] : (localUserGrid ? localUserGrid[gridIdx] : 0);
-                        const rgb = colorId !== 0 ? rgbPaletteParsed[colorId] : [240, 240, 240];
+                        let colorId = task.isComplete ? genAnswerGrid[gridIdx] : (localUserGrid ? localUserGrid[gridIdx] : 0);
+                        const rgb = colorId !== 0 ? genPalette[colorId] : [240, 240, 240];
 
                         const idx = rowOffset + (x * 4);
                         imgData.data[idx] = rgb ? rgb[0] : 240;
@@ -760,10 +748,10 @@
             };
 
             if (CATEGORIES[task.category].type === 'math') {
-                generateDeterministicData(task.levelIndex);
+                generateDeterministicData(task.levelIndex, target);
                 renderCanvas();
             } else {
-                generatePhotoData(task.levelIndex + CATEGORIES[task.category].seedOffset, renderCanvas);
+                generatePhotoData(task.levelIndex + CATEGORIES[task.category].seedOffset, renderCanvas, target);
             }
         }
 
@@ -890,8 +878,8 @@
             const targetY = Math.floor(targetIdx / GRID_SIZE);
 
             const targetZoom = 20; 
-            const destX = (canvas.width / 2) - (targetX + 0.5) * targetZoom;
-            const destY = (canvas.height / 2) - (targetY + 0.5) * targetZoom;
+            const destX = (canvasCSSWidth / 2) - (targetX + 0.5) * targetZoom;
+            const destY = (canvasCSSHeight / 2) - (targetY + 0.5) * targetZoom;
 
             let startZoom = viewTransform.zoom;
             let startX = viewTransform.x;
@@ -986,11 +974,11 @@
         }
 
         function resetViewport() {
-            const minDim = Math.min(canvas.width, canvas.height);
+            const minDim = Math.min(canvasCSSWidth, canvasCSSHeight);
             viewTransform.zoom = (minDim / GRID_SIZE) * 0.8;
             if (viewTransform.zoom < 1) viewTransform.zoom = 3; 
-            viewTransform.x = (canvas.width - GRID_SIZE * viewTransform.zoom) / 2;
-            viewTransform.y = (canvas.height - GRID_SIZE * viewTransform.zoom) / 2;
+            viewTransform.x = (canvasCSSWidth - GRID_SIZE * viewTransform.zoom) / 2;
+            viewTransform.y = (canvasCSSHeight - GRID_SIZE * viewTransform.zoom) / 2;
         }
 
         // --- CANVAS DRAWER REDRAW ENGINE ---
@@ -999,6 +987,8 @@
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             ctx.save();
+            const dpr = window.devicePixelRatio || 1;
+            ctx.scale(dpr, dpr);
             ctx.translate(viewTransform.x, viewTransform.y);
             ctx.scale(viewTransform.zoom, viewTransform.zoom);
 
@@ -1186,6 +1176,31 @@
             draw();
         }, { passive: false });
 
+        // Firefox (Linux/Windows) delivers trackpad pinch as MozMagnifyGesture*
+        // events, not wheel events. Without this, pinch falls through to
+        // Firefox's native whole-page zoom instead of the canvas.
+        canvas.addEventListener('MozMagnifyGestureStart', handlePinchZoom, { passive: false });
+        canvas.addEventListener('MozMagnifyGestureUpdate', handlePinchZoom, { passive: false });
+        canvas.addEventListener('MozMagnifyGestureEnd', (e) => e.preventDefault(), { passive: false });
+
+        function handlePinchZoom(e) {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = e.clientX - rect.left;
+            const mouseY = e.clientY - rect.top;
+
+            const nextZoom = viewTransform.zoom * (1 + e.delta);
+            if (nextZoom > 50 || nextZoom < 1.5) return;
+
+            const gridX = (mouseX - viewTransform.x) / viewTransform.zoom;
+            const gridY = (mouseY - viewTransform.y) / viewTransform.zoom;
+
+            viewTransform.zoom = nextZoom;
+            viewTransform.x = mouseX - gridX * viewTransform.zoom;
+            viewTransform.y = mouseY - gridY * viewTransform.zoom;
+            draw();
+        }
+
         // Touch Input - Critical: { passive: false } and e.preventDefault() block browser scrolling.
         canvas.addEventListener('touchstart', (e) => {
             e.preventDefault(); 
@@ -1283,16 +1298,31 @@
             }
         }, { passive: false });
 
-        window.addEventListener('touchend', () => {
+        window.addEventListener('touchend', (e) => {
+            if (isDragging || isPanning) saveState();
+            if (e.touches.length === 0) {
+                isDragging = false;
+                isPanning = false;
+            } else if (e.touches.length === 1) {
+                // Lifting one finger out of a 2-finger pinch/pan shouldn't end the whole
+                // gesture - degrade to a 1-finger pan instead of forcing the user to
+                // re-touch to continue.
+                isDragging = false;
+                isPanning = true;
+                lastMousePos = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+            }
+        });
+
+        window.addEventListener('touchcancel', () => {
             if (isDragging || isPanning) saveState();
             isDragging = false;
             isPanning = false;
         });
 
         function moveLevel(dir) {
+            saveState();
             let next = currentLevel + dir;
             if(next >= 0 && next < TOTAL_LEVELS) {
-                saveState();
                 if (CATEGORIES[currentCategory].type === 'photo') {
                     document.getElementById('loader-overlay').style.display = 'flex';
                 }
@@ -1303,8 +1333,13 @@
         function resizeCanvas() {
             const container = document.getElementById('canvas-container');
             if (!container) return;
-            canvas.width = container.clientWidth || window.innerWidth;
-            canvas.height = container.clientHeight || (window.innerHeight - 240);
+            const dpr = window.devicePixelRatio || 1;
+            canvasCSSWidth = container.clientWidth || window.innerWidth;
+            canvasCSSHeight = container.clientHeight || (window.innerHeight - 240);
+            canvas.width = Math.round(canvasCSSWidth * dpr);
+            canvas.height = Math.round(canvasCSSHeight * dpr);
+            canvas.style.width = canvasCSSWidth + 'px';
+            canvas.style.height = canvasCSSHeight + 'px';
         }
 
         function saveState() {
@@ -1315,14 +1350,11 @@
             for(let i=0; i<userGrid.length; i++) {
                 if(userGrid[i] !== 0) coloredCoords.push(i);
             }
-            const key = `grid_save_${currentCategory}_${currentLevel}`;
-            const payload = JSON.stringify(coloredCoords);
-            safeLocalSet(key, payload);
-            idbSet(key, payload);
+            localStorage.setItem(`grid_save_${currentCategory}_${currentLevel}`, JSON.stringify(coloredCoords));
         }
 
         function loadState() {
-            const data = safeLocalGet(`grid_save_${currentCategory}_${currentLevel}`);
+            const data = localStorage.getItem(`grid_save_${currentCategory}_${currentLevel}`);
             if(!data) return;
             const coloredIndices = JSON.parse(data);
             for(let i=0; i<coloredIndices.length; i++) {
@@ -1348,21 +1380,19 @@
             }
         }
 
+        // iOS Safari fires native gesturestart/gesturechange page-zoom on 2-finger
+        // touch regardless of the viewport meta tag. Block it so touchstart/touchmove
+        // pinch-zoom logic above receives the events instead.
+        document.addEventListener('gesturestart', (e) => e.preventDefault());
+        document.addEventListener('gesturechange', (e) => e.preventDefault());
+        document.addEventListener('gestureend', (e) => e.preventDefault());
+
         window.addEventListener('resize', () => { resizeCanvas(); draw(); });
         window.addEventListener('load', () => { 
             initTabs();
             requestPersistentStorage();
-            reconcileStorage().finally(() => {
-                setTimeout(() => { renderPortfolioGallery(); }, 50); 
-            });
+            setTimeout(() => { renderPortfolioGallery(); }, 50); 
         });
-
-        // iOS can suspend or kill a backgrounded Safari tab without firing beforeunload.
-        // visibilitychange + pagehide are the reliable signals to flush the current stroke.
-        document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'hidden') saveState();
-        });
-        window.addEventListener('pagehide', () => { saveState(); });
     </script>
 </body>
 </html>
