@@ -379,7 +379,7 @@
                     if (myLoadToken !== levelLoadToken) return; // stale - superseded by a newer load or a Cancel
                     document.getElementById('loader-overlay').style.display = 'none';
                     finalizeLevelLoad();
-                });
+                }, undefined, undefined, () => myLoadToken !== levelLoadToken);
             }
         }
 
@@ -484,21 +484,28 @@
         // leaving the loader (which covers the whole screen) up indefinitely.
         const PHOTO_GEN_MAX_RETRIES = 3;
         const PHOTO_GEN_TIMEOUT_MS = 4000;
-        function generatePhotoData(seed, callback, target, retryCount) {
+        function generatePhotoData(seed, callback, target, retryCount, isStaleCheck) {
             retryCount = retryCount || 0;
 
+            // For a live (non-thumbnail) load, bail entirely if a newer level load has
+            // since started - covers every exit path: give-up-fallback, retry, and the
+            // final successful write below.
+            const isStale = () => !target && isStaleCheck && isStaleCheck();
+
             const giveUpAndFallBack = () => {
+                if (isStale()) return;
                 console.log("Photo generation failed repeatedly. Falling back to a procedural pattern.");
                 generateDeterministicData(seed, target);
                 if (callback) callback();
             };
 
             const retryOrGiveUp = (nextSeed) => {
+                if (isStale()) return;
                 if (retryCount >= PHOTO_GEN_MAX_RETRIES) {
                     giveUpAndFallBack();
                     return;
                 }
-                generatePhotoData(nextSeed, callback, target, retryCount + 1);
+                generatePhotoData(nextSeed, callback, target, retryCount + 1, isStaleCheck);
             };
 
             let settled = false;
@@ -650,6 +657,8 @@
                     }
                     localAnswerGrid[i / 4] = closestId;
                 }
+
+                if (isStale()) return; // a newer level load has since started - discard this result
 
                 if (target) {
                     target.colorPalette = palette;
