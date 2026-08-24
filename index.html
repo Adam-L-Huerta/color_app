@@ -10,7 +10,7 @@
     
     <style>
         :root { --bg: #121212; --ui: #1e1e1e; --accent: #00adb5; --text: #eeeeee; }
-        body { margin: 0; padding: 0; background: var(--bg); font-family: system-ui, sans-serif; color: var(--text); height: 100vh; overflow: hidden; user-select: none; -webkit-user-select: none; touch-action: none; }
+        body { margin: 0; padding: 0; background: var(--bg); font-family: system-ui, sans-serif; color: var(--text); height: 100vh; overflow: hidden; user-select: none; -webkit-user-select: none; touch-action: auto; }
         
         /* Multi-Screen Structural Framework Panels */
         .screen { display: none; height: 100vh; width: 100vw; flex-direction: column; }
@@ -44,7 +44,7 @@
         #main-layout { flex: 1; display: flex; position: relative; background: #151515; overflow: hidden; width: 100%; }
         #canvas-container { flex: 1; position: relative; cursor: grab; width: 100%; height: 100%; }
         #canvas-container:active { cursor: grabbing; }
-        #gameCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+        #gameCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
         
         /* Sliding Tray Container Panel */
         #palette-wrapper { position: relative; height: 180px; background: var(--ui); border-top: 1px solid #333; z-index: 10; flex-shrink: 0; transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1); }
@@ -95,14 +95,14 @@
     </div>
 
     <div id="game-screen" class="screen">
-        <div id="header" style="touch-action: manipulation;">
+        <div id="header">
             <div style="font-size: 16px; font-weight: bold; flex-shrink: 0;">
                 <span id="level-type-label">Mandala</span> #<span id="img-index">1</span> / <span id="total-index">5000</span>
             </div>
             <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end;">
-                <button type="button" class="btn nav-btn" style="background: #3a3a40;" onclick="returnToGallery()">← Gallery</button>
-                <button type="button" class="btn nav-btn" id="prev-btn" onclick="moveLevel(-1)">Prev</button>
-                <button type="button" class="btn nav-btn" id="next-btn" onclick="moveLevel(1)">Next</button>
+                <button type="button" class="btn nav-btn" id="gallery-btn" style="background: #3a3a40;">← Gallery</button>
+                <button type="button" class="btn nav-btn" id="prev-btn">Prev</button>
+                <button type="button" class="btn nav-btn" id="next-btn">Next</button>
                 <button class="btn" style="background: #444; padding: 10px 14px;" title="Fullscreen Mode" onclick="toggleFullScreen()">⛶</button>
                 <button class="btn" style="background: #f1c40f; color: #111;" onclick="useHint()">💡 Hint</button>
             </div>
@@ -167,7 +167,6 @@
         // whatever's on screen now.
         let levelLoadToken = 0;
         let levelLoadTimer = null;
-        let isNavigatingLevel = false;
 
         let currentSymmetryArms = 12;
         let currentFrequencyMod = 1.0;
@@ -282,6 +281,7 @@
 
         // --- FULLSCREEN CONTROLLER ---
         function toggleFullScreen() {
+            if (isStandaloneWebApp()) return;
             if (!document.fullscreenElement && !document.webkitFullscreenElement) {
                 if (document.documentElement.requestFullscreen) {
                     document.documentElement.requestFullscreen();
@@ -299,14 +299,10 @@
 
         // --- SCREEN ROUTING ENGINE ---
         function returnToGallery() {
-            if (levelLoadTimer) {
-                clearTimeout(levelLoadTimer);
-                levelLoadTimer = null;
-            }
+            if (levelLoadTimer) { clearTimeout(levelLoadTimer); levelLoadTimer = null; }
             levelLoadToken++;
             resetInputState();
             document.getElementById('loader-overlay').style.display = 'none';
-
             saveState();
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
             if (hintAnimationId) cancelAnimationFrame(hintAnimationId);
@@ -331,22 +327,15 @@
         }
 
         function loadActiveGameLevel(levelIndex) {
-            if (levelLoadTimer) {
-                clearTimeout(levelLoadTimer);
-                levelLoadTimer = null;
-            }
-
+            if (levelLoadTimer) { clearTimeout(levelLoadTimer); levelLoadTimer = null; }
             levelLoadToken++;
             resetInputState();
-
             document.getElementById('home-screen').classList.remove('active');
             document.getElementById('game-screen').classList.add('active');
             document.getElementById('level-type-label').textContent = CATEGORIES[currentCategory].title.split(' ')[1];
             document.getElementById('total-index').textContent = TOTAL_LEVELS;
-
             const isPhoto = CATEGORIES[currentCategory].type === 'photo';
             document.getElementById('loader-overlay').style.display = isPhoto ? 'flex' : 'none';
-
             levelLoadTimer = setTimeout(() => {
                 levelLoadTimer = null;
                 initLevel(levelIndex);
@@ -358,21 +347,36 @@
         // screen, so without this a stuck fetch could make the app look totally
         // unresponsive with no way out.
         function cancelPendingLevelLoad() {
-            if (levelLoadTimer) {
-                clearTimeout(levelLoadTimer);
-                levelLoadTimer = null;
-            }
-
+            if (levelLoadTimer) { clearTimeout(levelLoadTimer); levelLoadTimer = null; }
             levelLoadToken++;
             resetInputState();
             document.getElementById('loader-overlay').style.display = 'none';
-
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
             if (hintAnimationId) cancelAnimationFrame(hintAnimationId);
             activeHintCell = null;
             document.getElementById('game-screen').classList.remove('active');
             document.getElementById('home-screen').classList.add('active');
             renderPortfolioGallery();
+        }
+
+        function isStandaloneWebApp() {
+            return window.navigator.standalone === true ||
+                   window.matchMedia('(display-mode: standalone)').matches;
+        }
+
+        function bindNavigationButton(id, action) {
+            const button = document.getElementById(id);
+            if (!button) return;
+            let lastActivation = 0;
+            const activate = (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const now = performance.now();
+                if (now - lastActivation < 350) return;
+                lastActivation = now;
+                action();
+            };
+            button.addEventListener('click', activate, { passive: false });
         }
 
         function resetInputState() {
@@ -405,14 +409,12 @@
             if (CATEGORIES[currentCategory].type === 'math') {
                 generateDeterministicData(currentLevel);
                 finalizeLevelLoad();
-                isNavigatingLevel = false;
             } else {
                 const seedOffset = CATEGORIES[currentCategory].seedOffset;
                 generatePhotoData(currentLevel + seedOffset, () => {
                     if (myLoadToken !== levelLoadToken) return; // stale - superseded by a newer load or a Cancel
                     document.getElementById('loader-overlay').style.display = 'none';
                     finalizeLevelLoad();
-                    isNavigatingLevel = false;
                 }, undefined, undefined, () => myLoadToken !== levelLoadToken);
             }
         }
@@ -1408,29 +1410,19 @@
 
         window.addEventListener('touchcancel', () => {
             if (isDragging || isPanning) saveState();
-            resetInputState();
+            isDragging = false;
+            isPanning = false;
         });
 
         function moveLevel(dir) {
-            if (isNavigatingLevel) return;
-
             const next = currentLevel + dir;
             if (next < 0 || next >= TOTAL_LEVELS) return;
-
-            isNavigatingLevel = true;
             saveState();
-
+            if (levelLoadTimer) { clearTimeout(levelLoadTimer); levelLoadTimer = null; }
             levelLoadToken++;
-            if (levelLoadTimer) {
-                clearTimeout(levelLoadTimer);
-                levelLoadTimer = null;
-            }
-
             resetInputState();
-
             const isPhoto = CATEGORIES[currentCategory].type === 'photo';
             document.getElementById('loader-overlay').style.display = isPhoto ? 'flex' : 'none';
-
             levelLoadTimer = setTimeout(() => {
                 levelLoadTimer = null;
                 initLevel(next);
@@ -1490,12 +1482,12 @@
         // iOS Safari fires native gesturestart/gesturechange page-zoom on 2-finger
         // touch regardless of the viewport meta tag. Block it so touchstart/touchmove
         // pinch-zoom logic above receives the events instead.
-        document.addEventListener('gesturestart', (e) => e.preventDefault());
-        document.addEventListener('gesturechange', (e) => e.preventDefault());
-        document.addEventListener('gestureend', (e) => e.preventDefault());
 
         window.addEventListener('resize', () => { resizeCanvas(); draw(); });
-        window.addEventListener('load', () => { 
+        window.addEventListener('load', () => {
+            bindNavigationButton('prev-btn', () => moveLevel(-1));
+            bindNavigationButton('next-btn', () => moveLevel(1));
+            bindNavigationButton('gallery-btn', () => returnToGallery());
             initTabs();
             requestPersistentStorage();
             setTimeout(() => { renderPortfolioGallery(); }, 50); 
