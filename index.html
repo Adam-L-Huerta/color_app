@@ -67,6 +67,7 @@
     <div id="loader-overlay">
         <div class="spinner"></div>
         <div id="loader-text" style="font-size: 18px; font-weight: bold;">Processing Image Asset Grid...</div>
+        <button class="btn" style="margin-top: 24px; background: #3a3a40;" onclick="cancelPendingLevelLoad()">Cancel</button>
     </div>
 
     <input type="file" id="import-file" style="display: none" accept=".json" onchange="handleImport(event)">
@@ -158,6 +159,12 @@
         // logical space, so anything that needs the on-screen size uses these instead.
         let canvasCSSWidth = 0;
         let canvasCSSHeight = 0;
+
+        // Bumped every time a new level load starts. A pending async photo generation
+        // checks this before applying its result, so a slow/late response from a level
+        // the user has already navigated away from is discarded instead of clobbering
+        // whatever's on screen now.
+        let levelLoadToken = 0;
 
         let currentSymmetryArms = 12;
         let currentFrequencyMod = 1.0;
@@ -325,7 +332,28 @@
             setTimeout(() => { initLevel(levelIndex); }, 50);
         }
 
+        // Bails out of whatever level load is in flight (e.g. a slow/blocked image
+        // fetch) and returns to the gallery. The loader overlay covers the whole
+        // screen, so without this a stuck fetch could make the app look totally
+        // unresponsive with no way out.
+        function cancelPendingLevelLoad() {
+            levelLoadToken++; // invalidate any in-flight photo callback
+            document.getElementById('loader-overlay').style.display = 'none';
+            // Not calling saveState()/returnToGallery() here on purpose: currentLevel has
+            // already been updated to the level that was loading, but userGrid still holds
+            // the PREVIOUS level's data (loadState() hasn't run yet for the new one). Saving
+            // now would write stale data into the new level's slot.
+            if (animationFrameId) cancelAnimationFrame(animationFrameId);
+            if (hintAnimationId) cancelAnimationFrame(hintAnimationId);
+            activeHintCell = null;
+            document.getElementById('game-screen').classList.remove('active');
+            document.getElementById('home-screen').classList.add('active');
+            renderPortfolioGallery();
+        }
+
         function initLevel(levelIndex) {
+            const myLoadToken = ++levelLoadToken;
+
             if (animationFrameId) cancelAnimationFrame(animationFrameId);
             if (hintAnimationId) cancelAnimationFrame(hintAnimationId);
             
@@ -348,6 +376,7 @@
             } else {
                 const seedOffset = CATEGORIES[currentCategory].seedOffset;
                 generatePhotoData(currentLevel + seedOffset, () => {
+                    if (myLoadToken !== levelLoadToken) return; // stale - superseded by a newer load or a Cancel
                     document.getElementById('loader-overlay').style.display = 'none';
                     finalizeLevelLoad();
                 });
@@ -449,10 +478,12 @@
         // --- MEDIAN CUT ENGINE WITH BLACK & WHITE FILTER ---
         // If `target` is passed, results are written into target.{colorPalette,rgbPaletteParsed,
         // answerGrid,userGrid} instead of the live game globals (see generateDeterministicData).
-        // Rerolls (grayscale image, load error, blocked canvas read) are capped; past the cap
-        // this falls back to the procedural math generator so `callback` always eventually fires
-        // instead of leaving the loader spinning forever on a bad network.
-        const PHOTO_GEN_MAX_RETRIES = 8;
+        // Rerolls (grayscale image, load error, blocked canvas read, or a timed-out fetch on a
+        // slow/blocked network) are capped and time-bounded; past that this falls back to the
+        // procedural math generator so `callback` always fires within a few seconds instead of
+        // leaving the loader (which covers the whole screen) up indefinitely.
+        const PHOTO_GEN_MAX_RETRIES = 3;
+        const PHOTO_GEN_TIMEOUT_MS = 4000;
         function generatePhotoData(seed, callback, target, retryCount) {
             retryCount = retryCount || 0;
 
@@ -470,11 +501,27 @@
                 generatePhotoData(nextSeed, callback, target, retryCount + 1);
             };
 
+            let settled = false;
             const img = new Image();
             img.crossOrigin = "anonymous";
             img.src = `https://picsum.photos/seed/${seed}/640/640`;
+
+            // Image elements have no built-in load timeout - a blocked/filtered domain can
+            // hang indefinitely rather than firing onerror. Force a decision after a few seconds.
+            const timeoutId = setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                img.onload = null;
+                img.onerror = null;
+                console.log("Image load timed out. Retrying...");
+                retryOrGiveUp(seed + 55);
+            }, PHOTO_GEN_TIMEOUT_MS);
             
             img.onload = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutId);
+
                 let bytes;
                 try {
                     const tempCanvas = document.createElement('canvas');
@@ -620,6 +667,9 @@
             };
             
             img.onerror = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timeoutId);
                 retryOrGiveUp(seed + 99);
             };
         }
