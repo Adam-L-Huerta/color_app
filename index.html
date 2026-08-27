@@ -174,7 +174,6 @@
         let thumbnailQueue = [];
         let isGeneratingThumbnail = false;
 
-        // --- RENDER & PERSISTENCE DECOUPLING ENGINE ---
         let needsRedraw = false;
         function requestDraw() {
             if (!needsRedraw) {
@@ -202,7 +201,6 @@
             }
         }
 
-        // --- BACKUP & RESTORE JSON ENGINE ---
         function exportBackup() {
             const backupData = {};
             for (let i = 0; i < localStorage.length; i++) {
@@ -330,8 +328,9 @@
 
         function launchNextIncompleteLevel() {
             let nextIncomplete = 0;
+            const prefix = `grid_save_${currentCategory}_`;
             for (let i = 0; i < TOTAL_LEVELS; i++) {
-                const saved = localStorage.getItem(`grid_save_${currentCategory}_${i}`);
+                const saved = localStorage.getItem(`${prefix}${i}`);
                 if (!saved) { nextIncomplete = i; break; }
                 const coloredIndices = JSON.parse(saved);
                 if (coloredIndices.length < (GRID_SIZE * GRID_SIZE)) {
@@ -722,8 +721,23 @@
             thumbnailQueue = [];
             isGeneratingThumbnail = false;
 
-            for (let i = 0; i < TOTAL_LEVELS; i++) {
-                const saved = localStorage.getItem(`grid_save_${currentCategory}_${i}`);
+            const prefix = `grid_save_${currentCategory}_`;
+            const matchingKeys = [];
+
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key.startsWith(prefix)) {
+                    const levelIndex = parseInt(key.slice(prefix.length), 10);
+                    if (!isNaN(levelIndex)) {
+                        matchingKeys.push(levelIndex);
+                    }
+                }
+            }
+
+            matchingKeys.sort((a, b) => a - b);
+
+            for (const i of matchingKeys) {
+                const saved = localStorage.getItem(`${prefix}${i}`);
                 if (!saved) continue;
 
                 const coloredIndices = JSON.parse(saved);
@@ -739,8 +753,8 @@
                 previewContainer.className = 'card-preview';
                 
                 const tCanvas = document.createElement('canvas');
-                tCanvas.width = 360;
-                tCanvas.height = 360;
+                tCanvas.width = GRID_SIZE;
+                tCanvas.height = GRID_SIZE;
                 previewContainer.appendChild(tCanvas);
 
                 const label = document.createElement('div');
@@ -794,38 +808,30 @@
 
             const renderCanvas = () => {
                 const tCtx = task.canvas.getContext('2d');
-                const imgData = tCtx.createImageData(360, 360);
-                const stepFactor = GRID_SIZE / 360;
+                const imgData = tCtx.createImageData(GRID_SIZE, GRID_SIZE);
                 const genAnswerGrid = target.answerGrid;
                 const genPalette = target.rgbPaletteParsed;
 
                 let localUserGrid = null;
                 if (!task.isComplete) {
                     localUserGrid = new Uint8Array(GRID_SIZE * GRID_SIZE);
-                    for(let idx of task.coloredIndices) localUserGrid[idx] = genAnswerGrid[idx];
+                    for (let idx of task.coloredIndices) localUserGrid[idx] = genAnswerGrid[idx];
                 }
 
-                for (let y = 0; y < 360; y++) {
-                    const srcY = Math.floor(y * stepFactor);
-                    const rowOffset = y * 360 * 4;
-                    for (let x = 0; x < 360; x++) {
-                        const srcX = Math.floor(x * stepFactor);
-                        const gridIdx = srcY * GRID_SIZE + srcX;
-                        
-                        let colorId = task.isComplete ? genAnswerGrid[gridIdx] : (localUserGrid ? localUserGrid[gridIdx] : 0);
-                        const rgb = colorId !== 0 ? genPalette[colorId] : [240, 240, 240];
+                for (let i = 0; i < GRID_SIZE * GRID_SIZE; i++) {
+                    let colorId = task.isComplete ? genAnswerGrid[i] : (localUserGrid ? localUserGrid[i] : 0);
+                    const rgb = colorId !== 0 ? genPalette[colorId] : [240, 240, 240];
 
-                        const idx = rowOffset + (x * 4);
-                        imgData.data[idx] = rgb ? rgb[0] : 240;
-                        imgData.data[idx+1] = rgb ? rgb[1] : 240;
-                        imgData.data[idx+2] = rgb ? rgb[2] : 240;
-                        imgData.data[idx+3] = 255;
-                    }
+                    const pxIdx = i * 4;
+                    imgData.data[pxIdx]     = rgb ? rgb[0] : 240;
+                    imgData.data[pxIdx + 1] = rgb ? rgb[1] : 240;
+                    imgData.data[pxIdx + 2] = rgb ? rgb[2] : 240;
+                    imgData.data[pxIdx + 3] = 255;
                 }
                 tCtx.putImageData(imgData, 0, 0);
                 
                 isGeneratingThumbnail = false;
-                processThumbnailQueue();
+                setTimeout(processThumbnailQueue, 16);
             };
 
             if (CATEGORIES[task.category].type === 'math') {
@@ -1059,7 +1065,6 @@
             viewTransform.y = (canvasCSSHeight - GRID_SIZE * viewTransform.zoom) / 2;
         }
 
-        // --- OPTIMIZED CANVAS RENDERER (VIEWPORT CULLED & BATCHED) ---
         function draw() {
             if (canvas.width === 0 || canvas.height === 0) return;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1079,7 +1084,6 @@
                     ctx.globalAlpha = 1 - fadeProgress; 
                 }
 
-                // Calculate visible grid bounding box for rendering
                 const minGridX = Math.max(0, Math.floor(-viewTransform.x / z));
                 const maxGridX = Math.min(GRID_SIZE, Math.ceil((canvasCSSWidth - viewTransform.x) / z));
                 const minGridY = Math.max(0, Math.floor(-viewTransform.y / z));
@@ -1157,7 +1161,6 @@
             return { x: gridX, y: gridY };
         }
 
-        // --- DECOUPLED EVENT HANDLERS ---
         window.addEventListener('keydown', (e) => {
             if (e.code === 'Space') {
                 isSpacePressed = true;
