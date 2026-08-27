@@ -12,15 +12,12 @@
         :root { --bg: #121212; --ui: #1e1e1e; --accent: #00adb5; --text: #eeeeee; }
         body { margin: 0; padding: 0; background: var(--bg); font-family: system-ui, sans-serif; color: var(--text); height: 100vh; overflow: hidden; user-select: none; -webkit-user-select: none; touch-action: auto; }
         
-        /* Multi-Screen Structural Framework Panels */
         .screen { display: none; height: 100vh; width: 100vw; flex-direction: column; }
         .screen.active { display: flex; }
 
-        /* Gallery Interface Screen Styles */
         #home-screen { padding: 40px 30px; box-sizing: border-box; overflow-y: auto; height: 100vh; }
         .controls-row { display: flex; gap: 15px; align-items: center; margin-bottom: 30px; flex-wrap: wrap; justify-content: space-between; }
         
-        /* Category Navigation Tabs */
         .tab-container { display: flex; gap: 10px; border-bottom: 2px solid #2a2a2a; padding-bottom: 10px; flex-wrap: wrap; }
         .tab-btn { background: #25252b; color: #888; border: none; padding: 12px 24px; font-size: 15px; font-weight: bold; cursor: pointer; border-radius: 6px; transition: all 0.2s; }
         .tab-btn:hover { color: #fff; background: #2f2f36; }
@@ -34,14 +31,12 @@
         
         .empty-gallery-msg { color: #888; font-style: italic; font-size: 15px; margin-top: 20px; background: var(--ui); padding: 25px; border-radius: 8px; border: 1px dashed #444; text-align: center; width: 100%; max-width: 550px; }
 
-        /* Active Gameplay Board Screen Layout Components */
         #header { height: 60px; background: var(--ui); display: flex; align-items: center; padding: 0 20px; justify-content: space-between; border-bottom: 1px solid #333; z-index: 10; flex-shrink: 0; }
         .btn { background: var(--accent); color: #fff; border: none; padding: 10px 18px; font-weight: bold; font-size: 14px; cursor: pointer; border-radius: 4px; transition: opacity 0.15s; }
         .btn:hover { filter: brightness(1.1); }
         .btn:disabled { background: #444; color: #777; cursor: not-allowed; filter: none; }
         .nav-btn { touch-action: manipulation; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 
-        /* Save Indicator Notification Styling */
         .save-indicator { display: inline-block; margin-left: 12px; font-size: 13px; font-weight: 600; color: #2ecc71; opacity: 0; transition: opacity 0.3s ease; pointer-events: none; }
         .save-indicator.visible { opacity: 1; }
         
@@ -50,7 +45,6 @@
         #canvas-container:active { cursor: grabbing; }
         #gameCanvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; display: block; image-rendering: pixelated; touch-action: none; -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
         
-        /* Sliding Tray Container Panel */
         #palette-wrapper { position: relative; height: 180px; background: var(--ui); border-top: 1px solid #333; z-index: 10; flex-shrink: 0; transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1); }
         #palette-wrapper.hidden { transform: translateY(100%); margin-top: -180px; }
         #palette-bar { height: 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(50px, 1fr)); gap: 6px; padding: 10px; overflow-y: auto; box-sizing: border-box; }
@@ -61,7 +55,6 @@
         
         #controls-hint { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 8px 12px; border-radius: 4px; font-size: 12px; pointer-events: none; z-index: 5; color: #aaa; }
         
-        /* Loading overlay for async landscape generation */
         #loader-overlay { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); z-index: 100; justify-content: center; align-items: center; flex-direction: column; }
         .spinner { width: 50px; height: 50px; border: 5px solid #333; border-top: 5px solid var(--accent); border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
@@ -81,8 +74,7 @@
         <h1 style="margin-top: 0; font-weight: 800; letter-spacing: -0.5px;">Mixed Media Painting Studio</h1>
         
         <div class="controls-row">
-            <div class="tab-container" id="category-tabs">
-                </div>
+            <div class="tab-container" id="category-tabs"></div>
             
             <div style="display: flex; gap: 10px;">
                 <button class="btn" style="background: #2b2b36;" onclick="exportBackup()">💾 Backup Saves</button>
@@ -128,12 +120,10 @@
     </div>
 
     <script>
-        // --- CORE CONFIGURATIONS ---
         const GRID_SIZE = 150; 
         const TOTAL_LEVELS = 5000; 
         const TARGET_COLORS_COUNT = 160; 
 
-        // Dynamic Category System
         const CATEGORIES = {
             'mandala': { title: 'Geometric Mandalas', type: 'math' },
             'photography': { title: 'General Photography', type: 'photo', seedOffset: 500 }
@@ -152,7 +142,6 @@
         const ctx = canvas.getContext('2d');
         let viewTransform = { x: 0, y: 0, zoom: 1 };
         
-        // Input Tracking Variables
         let isDragging = false;
         let isPanning = false;
         let isSpacePressed = false;
@@ -178,14 +167,40 @@
         const offscreenCtx = offscreenCanvas.getContext('2d');
         let isVectorCached = false;
 
-        // Hint System Variables
         let activeHintCell = null;
         let hintPingRadius = 0;
         let hintAnimationId = null;
 
-        // Safe Thumbnail Generator Queue
         let thumbnailQueue = [];
         let isGeneratingThumbnail = false;
+
+        // --- RENDER & PERSISTENCE DECOUPLING ENGINE ---
+        let needsRedraw = false;
+        function requestDraw() {
+            if (!needsRedraw) {
+                needsRedraw = true;
+                requestAnimationFrame(() => {
+                    needsRedraw = false;
+                    draw();
+                });
+            }
+        }
+
+        let saveDebounceTimer = null;
+        function queueSaveState() {
+            if (saveDebounceTimer) clearTimeout(saveDebounceTimer);
+            saveDebounceTimer = setTimeout(() => {
+                saveState();
+            }, 600);
+        }
+
+        function flushSaveState() {
+            if (saveDebounceTimer) {
+                clearTimeout(saveDebounceTimer);
+                saveDebounceTimer = null;
+                saveState();
+            }
+        }
 
         // --- BACKUP & RESTORE JSON ENGINE ---
         function exportBackup() {
@@ -240,7 +255,6 @@
             event.target.value = ''; 
         }
 
-        // Init Tabs
         function initTabs() {
             const tabContainer = document.getElementById('category-tabs');
             tabContainer.innerHTML = '';
@@ -276,13 +290,12 @@
             function step(timestamp) {
                 if (!start) start = timestamp;
                 resizeCanvas();
-                draw();
+                requestDraw();
                 if (timestamp - start < 320) requestAnimationFrame(step);
             }
             requestAnimationFrame(step);
         }
 
-        // --- FULLSCREEN CONTROLLER ---
         function toggleFullScreen() {
             if (isStandaloneWebApp()) return;
             if (!document.fullscreenElement && !document.webkitFullscreenElement) {
@@ -300,8 +313,8 @@
             }
         }
 
-        // --- SCREEN ROUTING ENGINE ---
         function returnToGallery() {
+            flushSaveState();
             if (levelLoadTimer) { clearTimeout(levelLoadTimer); levelLoadTimer = null; }
             levelLoadToken++;
             resetInputState();
@@ -330,6 +343,7 @@
         }
 
         function loadActiveGameLevel(levelIndex) {
+            flushSaveState();
             if (levelLoadTimer) { clearTimeout(levelLoadTimer); levelLoadTimer = null; }
             levelLoadToken++;
             resetInputState();
@@ -424,10 +438,9 @@
             resetViewport();
             generatePaletteUI();
             checkCompletionStatus();
-            draw();
+            requestDraw();
         }
 
-        // --- MATH PROCEDURAL EQUATIONS ENGINE ---
         function generateDeterministicData(seed, target) {
             let currentSeed = (seed + 1) * 123456789;
             function nextRandom() {
@@ -507,7 +520,6 @@
             return colorId;
         }
 
-        // --- MEDIAN CUT ENGINE WITH BLACK & WHITE FILTER ---
         const PHOTO_GEN_MAX_RETRIES = 3;
         const PHOTO_GEN_TIMEOUT_MS = 4000;
         function generatePhotoData(seed, callback, target, retryCount, isStaleCheck) {
@@ -698,7 +710,6 @@
             };
         }
 
-        // --- ASYNC QUEUED PORTFOLIO GALLERY GENERATION ENGINE ---
         function renderPortfolioGallery() {
             const inProgressGallery = document.getElementById('in-progress-gallery');
             const completedGallery = document.getElementById('completed-gallery');
@@ -825,7 +836,6 @@
             }
         }
 
-        // --- COMPLETION RENDER CACHE MECHANICS ---
         function cacheHighResMathBuffer() {
             const highResSize = 600; 
             offscreenCanvas.width = highResSize;
@@ -910,7 +920,6 @@
             animate();
         }
 
-        // --- HINT ENGINE ANIMATION & LOGIC ---
         function useHint() {
             if (isLevelComplete) return;
 
@@ -1000,7 +1009,6 @@
             animatePing();
         }
 
-        // --- PALETTE BOARD MANAGER DECK ---
         function generatePaletteUI() {
             const bar = document.getElementById('palette-bar');
             bar.innerHTML = '';
@@ -1027,7 +1035,7 @@
                     activeColorId = i;
                     document.querySelectorAll('.swatch').forEach(s => s.classList.remove('selected'));
                     swatch.classList.add('selected');
-                    draw();
+                    requestDraw();
                 };
                 bar.appendChild(swatch);
             }
@@ -1051,7 +1059,7 @@
             viewTransform.y = (canvasCSSHeight - GRID_SIZE * viewTransform.zoom) / 2;
         }
 
-        // --- CANVAS DRAWER REDRAW ENGINE ---
+        // --- OPTIMIZED CANVAS RENDERER (VIEWPORT CULLED & BATCHED) ---
         function draw() {
             if (canvas.width === 0 || canvas.height === 0) return;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1071,9 +1079,23 @@
                     ctx.globalAlpha = 1 - fadeProgress; 
                 }
 
-                for (let y = 0; y < GRID_SIZE; y++) {
-                    for (let x = 0; x < GRID_SIZE; x++) {
-                        const idx = y * GRID_SIZE + x;
+                // Calculate visible grid bounding box for rendering
+                const minGridX = Math.max(0, Math.floor(-viewTransform.x / z));
+                const maxGridX = Math.min(GRID_SIZE, Math.ceil((canvasCSSWidth - viewTransform.x) / z));
+                const minGridY = Math.max(0, Math.floor(-viewTransform.y / z));
+                const maxGridY = Math.min(GRID_SIZE, Math.ceil((canvasCSSHeight - viewTransform.y) / z));
+
+                if (z > 4 && !isLevelComplete) {
+                    ctx.lineWidth = 1 / z;
+                    ctx.font = '0.45px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                }
+
+                for (let y = minGridY; y < maxGridY; y++) {
+                    const rowOffset = y * GRID_SIZE;
+                    for (let x = minGridX; x < maxGridX; x++) {
+                        const idx = rowOffset + x;
                         const uColor = userGrid[idx];
                         const aColor = answerGrid[idx];
 
@@ -1082,7 +1104,6 @@
                             ctx.fillRect(x, y, 1.05, 1.05); 
                             
                             if (z > 4 && !isLevelComplete) {
-                                ctx.lineWidth = 1 / z;
                                 ctx.strokeStyle = 'rgba(0,0,0,0.15)';
                                 ctx.strokeRect(x, y, 1, 1);
                             }
@@ -1097,13 +1118,8 @@
                                 ctx.fillStyle = '#888888';
                             }
                             
-                            ctx.lineWidth = 1 / z;
                             ctx.strokeStyle = '#ddd';
                             ctx.strokeRect(x, y, 1, 1);
-
-                            ctx.font = '0.45px Arial';
-                            ctx.textAlign = 'center';
-                            ctx.textBaseline = 'middle';
                             ctx.fillText(aColor, x + 0.5, y + 0.5);
                         } else {
                             ctx.fillStyle = '#fff';
@@ -1141,7 +1157,7 @@
             return { x: gridX, y: gridY };
         }
 
-        // --- INTERACTION / PANNING / ZOOMING EVENT HANDLERS ---
+        // --- DECOUPLED EVENT HANDLERS ---
         window.addEventListener('keydown', (e) => {
             if (e.code === 'Space') {
                 isSpacePressed = true;
@@ -1170,10 +1186,10 @@
                     if (userGrid[idx] === 0 && answerGrid[idx] === activeColorId) {
                         isDragging = true;
                         userGrid[idx] = activeColorId;
-                        saveState();
+                        queueSaveState();
                         if(getRemainingCounts()[activeColorId] === 0) generatePaletteUI();
                         checkCompletionStatus();
-                        draw();
+                        requestDraw();
                     } else {
                         isPanning = true;
                     }
@@ -1187,16 +1203,17 @@
             if (isPanning) {
                 viewTransform.x += e.clientX - lastMousePos.x;
                 viewTransform.y += e.clientY - lastMousePos.y;
-                draw();
+                requestDraw();
             } else if (isDragging) {
                 const coords = getGridCoords(e.clientX, e.clientY);
                 if (coords.x >= 0 && coords.x < GRID_SIZE && coords.y >= 0 && coords.y < GRID_SIZE) {
                     const idx = coords.y * GRID_SIZE + coords.x;
                     if (userGrid[idx] === 0 && answerGrid[idx] === activeColorId) {
                         userGrid[idx] = activeColorId;
+                        queueSaveState();
                         if(getRemainingCounts()[activeColorId] === 0) generatePaletteUI();
                         checkCompletionStatus();
-                        draw();
+                        requestDraw();
                     }
                 }
             }
@@ -1204,7 +1221,7 @@
         });
 
         window.addEventListener('mouseup', () => { 
-            if (isDragging || isPanning) saveState();
+            if (isDragging || isPanning) flushSaveState();
             isDragging = false; 
             isPanning = false; 
         });
@@ -1228,7 +1245,7 @@
             viewTransform.zoom = nextZoom;
             viewTransform.x = mouseX - wheelGridX * viewTransform.zoom;
             viewTransform.y = mouseY - wheelGridY * viewTransform.zoom;
-            draw();
+            requestDraw();
         }, { passive: false });
 
         canvas.addEventListener('MozMagnifyGestureStart', handlePinchZoom, { passive: false });
@@ -1250,7 +1267,7 @@
             viewTransform.zoom = nextZoom;
             viewTransform.x = mouseX - gridX * viewTransform.zoom;
             viewTransform.y = mouseY - gridY * viewTransform.zoom;
-            draw();
+            requestDraw();
         }
 
         canvas.addEventListener('touchstart', (e) => {
@@ -1265,10 +1282,10 @@
                     if (userGrid[idx] === 0 && answerGrid[idx] === activeColorId && !isLevelComplete) {
                         isDragging = true;
                         userGrid[idx] = activeColorId;
-                        saveState();
+                        queueSaveState();
                         if(getRemainingCounts()[activeColorId] === 0) generatePaletteUI();
                         checkCompletionStatus();
-                        draw();
+                        requestDraw();
                     } else {
                         isPanning = true;
                     }
@@ -1297,9 +1314,10 @@
                     const idx = coords.y * GRID_SIZE + coords.x;
                     if (userGrid[idx] === 0 && answerGrid[idx] === activeColorId && !isLevelComplete) {
                         userGrid[idx] = activeColorId;
+                        queueSaveState();
                         if(getRemainingCounts()[activeColorId] === 0) generatePaletteUI();
                         checkCompletionStatus();
-                        draw();
+                        requestDraw();
                     }
                 }
                 lastMousePos = { x: touch.clientX, y: touch.clientY };
@@ -1308,7 +1326,7 @@
                 viewTransform.x += (touch.clientX - lastMousePos.x);
                 viewTransform.y += (touch.clientY - lastMousePos.y);
                 lastMousePos = { x: touch.clientX, y: touch.clientY };
-                draw();
+                requestDraw();
             } else if (isPanning && e.touches.length === 2) {
                 const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
                 const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
@@ -1336,12 +1354,12 @@
                 touchStartDist = dist;
                 lastMousePos.x = midX;
                 lastMousePos.y = midY;
-                draw();
+                requestDraw();
             }
         }, { passive: false });
 
         window.addEventListener('touchend', (e) => {
-            if (isDragging || isPanning) saveState();
+            if (isDragging || isPanning) flushSaveState();
             if (e.touches.length === 0) {
                 isDragging = false;
                 isPanning = false;
@@ -1353,7 +1371,7 @@
         });
 
         window.addEventListener('touchcancel', () => {
-            if (isDragging || isPanning) saveState();
+            if (isDragging || isPanning) flushSaveState();
             isDragging = false;
             isPanning = false;
         });
@@ -1361,7 +1379,7 @@
         function moveLevel(dir) {
             const next = currentLevel + dir;
             if (next < 0 || next >= TOTAL_LEVELS) return;
-            saveState();
+            flushSaveState();
             if (levelLoadTimer) { clearTimeout(levelLoadTimer); levelLoadTimer = null; }
             levelLoadToken++;
             resetInputState();
@@ -1385,7 +1403,6 @@
             canvas.style.height = canvasCSSHeight + 'px';
         }
 
-        // --- AUTO-SAVE NOTIFICATION TRIGGER ---
         function triggerSaveNotification() {
             const indicator = document.getElementById('save-indicator');
             if (!indicator) return;
@@ -1407,8 +1424,6 @@
                 if(userGrid[i] !== 0) coloredCoords.push(i);
             }
             localStorage.setItem(`grid_save_${currentCategory}_${currentLevel}`, JSON.stringify(coloredCoords));
-            
-            // Trigger auto-save visual notification
             triggerSaveNotification();
         }
 
@@ -1422,7 +1437,6 @@
             }
         }
 
-        // --- REQUEST PERSISTENT STORAGE ---
         async function requestPersistentStorage() {
             if (navigator.storage && navigator.storage.persist) {
                 const isPersisted = await navigator.storage.persisted();
@@ -1432,7 +1446,7 @@
             }
         }
 
-        window.addEventListener('resize', () => { resizeCanvas(); draw(); });
+        window.addEventListener('resize', () => { resizeCanvas(); requestDraw(); });
         window.addEventListener('load', () => {
             bindNavigationButton('prev-btn', () => moveLevel(-1));
             bindNavigationButton('next-btn', () => moveLevel(1));
