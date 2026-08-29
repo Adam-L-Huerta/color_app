@@ -627,6 +627,9 @@
 
         async function loadState() {
             userGrid.fill(0);
+            const key = `grid_save_${currentCategory}_${currentLevel}`;
+            let coloredIndices = JSON.parse(localStorage.getItem(key) || '[]');
+
             if (currentUser && supabaseClient) {
                 const { data } = await supabaseClient.from('user_progress')
                     .select('colored_indices, custom_url')
@@ -637,18 +640,17 @@
 
                 if (data) {
                     if (data.custom_url) customImageUrl = data.custom_url;
-                    if (data.colored_indices) {
-                        for (let idx of data.colored_indices) {
-                            userGrid[idx] = answerGrid[idx];
-                        }
+                    const remoteIndices = data.colored_indices || [];
+                    if (remoteIndices.length >= coloredIndices.length) {
+                        coloredIndices = remoteIndices;
+                        localStorage.setItem(key, JSON.stringify(coloredIndices));
                     }
-                    return;
                 }
             }
 
-            const key = `grid_save_${currentCategory}_${currentLevel}`;
-            let coloredIndices = JSON.parse(localStorage.getItem(key) || '[]');
-            for (let idx of coloredIndices) userGrid[idx] = answerGrid[idx];
+            for (let idx of coloredIndices) {
+                userGrid[idx] = answerGrid[idx];
+            }
         }
 
         function resetViewport() {
@@ -700,6 +702,16 @@
             completed.innerHTML = '';
 
             const progressMap = new Map();
+            const prefix = `grid_save_${currentCategory}_`;
+
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (!key.startsWith(prefix)) continue;
+                const levelIdx = parseInt(key.slice(prefix.length), 10);
+                if (isNaN(levelIdx)) continue;
+                const saved = JSON.parse(localStorage.getItem(key) || '[]');
+                if (saved.length > 0) progressMap.set(levelIdx, saved.length);
+            }
 
             if (currentUser && supabaseClient) {
                 const { data } = await supabaseClient.from('user_progress')
@@ -708,19 +720,26 @@
                     .eq('category', currentCategory);
 
                 if (data) {
-                    data.forEach(row => {
-                        const count = row.colored_indices ? row.colored_indices.length : 0;
-                        if (count > 0) progressMap.set(row.level_index, count);
-                    });
-                }
-            } else {
-                const prefix = `grid_save_${currentCategory}_`;
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    if (!key.startsWith(prefix)) continue;
-                    const levelIdx = parseInt(key.slice(prefix.length), 10);
-                    const saved = JSON.parse(localStorage.getItem(key) || '[]');
-                    if (saved.length) progressMap.set(levelIdx, saved.length);
+                    for (const row of data) {
+                        const remoteIndices = row.colored_indices || [];
+                        const remoteCount = remoteIndices.length;
+                        const localCount = progressMap.get(row.level_index) || 0;
+
+                        if (remoteCount >= localCount) {
+                            if (remoteCount > 0) {
+                                progressMap.set(row.level_index, remoteCount);
+                                localStorage.setItem(`${prefix}${row.level_index}`, JSON.stringify(remoteIndices));
+                            }
+                        } else {
+                            const localIndices = JSON.parse(localStorage.getItem(`${prefix}${row.level_index}`) || '[]');
+                            await supabaseClient.from('user_progress').upsert({
+                                user_id: currentUser.id,
+                                category: currentCategory,
+                                level_index: row.level_index,
+                                colored_indices: localIndices
+                            }, { onConflict: 'user_id,category,level_index' });
+                        }
+                    }
                 }
             }
 
