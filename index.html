@@ -201,6 +201,26 @@
             }
         }
 
+        async function initAuthSession() {
+            if (!supabaseClient) return;
+            const { data: { session } } = await supabaseClient.auth.getSession();
+            if (session) {
+                currentUser = session.user;
+                document.getElementById('auth-overlay').style.display = 'none';
+                document.getElementById('user-status').textContent = currentUser.email;
+                await renderPortfolioGallery();
+            }
+
+            supabaseClient.auth.onAuthStateChange(async (_event, session) => {
+                currentUser = session ? session.user : null;
+                document.getElementById('user-status').textContent = currentUser ? currentUser.email : 'Offline Mode';
+                if (currentUser) {
+                    document.getElementById('auth-overlay').style.display = 'none';
+                    await renderPortfolioGallery();
+                }
+            });
+        }
+
         async function handleAuth(type) {
             if (!supabaseClient) return bypassAuth();
             const email = document.getElementById('auth-email').value;
@@ -229,6 +249,7 @@
 
         async function logout() {
             if (supabaseClient) await supabaseClient.auth.signOut();
+            localStorage.clear();
             location.reload();
         }
 
@@ -263,7 +284,20 @@
                 const imageId = (currentLevel % 1084);
                 await loadPhotoFromUrl(`https://picsum.photos/id/${imageId}/150/150`);
             } else if (currentCategory === 'custom') {
-                const url = overrideUrl || customImageUrl || localStorage.getItem(`custom_url_${currentLevel}`);
+                let url = overrideUrl || customImageUrl;
+                
+                if (!url && currentUser && supabaseClient) {
+                    const { data } = await supabaseClient.from('user_progress')
+                        .select('custom_url')
+                        .eq('user_id', currentUser.id)
+                        .eq('category', 'custom')
+                        .eq('level_index', currentLevel)
+                        .maybeSingle();
+                    if (data && data.custom_url) url = data.custom_url;
+                }
+                
+                if (!url) url = localStorage.getItem(`custom_url_${currentLevel}`);
+                
                 if (!url) {
                     alert("Please provide a valid image URL.");
                     return;
@@ -561,12 +595,16 @@
 
         async function persistToCloud(coloredIndices) {
             if (!currentUser || !supabaseClient) return;
-            await supabaseClient.from('user_progress').upsert({
+            const payload = {
                 user_id: currentUser.id,
                 category: currentCategory,
                 level_index: currentLevel,
                 colored_indices: coloredIndices
-            }, { onConflict: 'user_id,category,level_index' });
+            };
+            if (currentCategory === 'custom' && customImageUrl) {
+                payload.custom_url = customImageUrl;
+            }
+            await supabaseClient.from('user_progress').upsert(payload, { onConflict: 'user_id,category,level_index' });
         }
 
         function saveState(immediate = false) {
@@ -582,29 +620,34 @@
                 if (immediate) {
                     persistToCloud(coloredIndices);
                 } else {
-                    saveTimeout = setTimeout(() => persistToCloud(coloredIndices), 1000);
+                    saveTimeout = setTimeout(() => persistToCloud(coloredIndices), 500);
                 }
             }
         }
 
         async function loadState() {
-            const key = `grid_save_${currentCategory}_${currentLevel}`;
-            let coloredIndices = JSON.parse(localStorage.getItem(key) || '[]');
-
+            userGrid.fill(0);
             if (currentUser && supabaseClient) {
                 const { data } = await supabaseClient.from('user_progress')
-                    .select('colored_indices')
+                    .select('colored_indices, custom_url')
                     .eq('user_id', currentUser.id)
                     .eq('category', currentCategory)
                     .eq('level_index', currentLevel)
                     .maybeSingle();
 
                 if (data) {
-                    coloredIndices = data.colored_indices;
-                    localStorage.setItem(key, JSON.stringify(coloredIndices));
+                    if (data.custom_url) customImageUrl = data.custom_url;
+                    if (data.colored_indices) {
+                        for (let idx of data.colored_indices) {
+                            userGrid[idx] = answerGrid[idx];
+                        }
+                    }
+                    return;
                 }
             }
 
+            const key = `grid_save_${currentCategory}_${currentLevel}`;
+            let coloredIndices = JSON.parse(localStorage.getItem(key) || '[]');
             for (let idx of coloredIndices) userGrid[idx] = answerGrid[idx];
         }
 
@@ -657,15 +700,6 @@
             completed.innerHTML = '';
 
             const progressMap = new Map();
-            const prefix = `grid_save_${currentCategory}_`;
-
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                if (!key.startsWith(prefix)) continue;
-                const levelIdx = parseInt(key.slice(prefix.length), 10);
-                const saved = JSON.parse(localStorage.getItem(key) || '[]');
-                if (saved.length) progressMap.set(levelIdx, saved.length);
-            }
 
             if (currentUser && supabaseClient) {
                 const { data } = await supabaseClient.from('user_progress')
@@ -676,11 +710,17 @@
                 if (data) {
                     data.forEach(row => {
                         const count = row.colored_indices ? row.colored_indices.length : 0;
-                        if (count > 0) {
-                            progressMap.set(row.level_index, count);
-                            localStorage.setItem(`${prefix}${row.level_index}`, JSON.stringify(row.colored_indices));
-                        }
+                        if (count > 0) progressMap.set(row.level_index, count);
                     });
+                }
+            } else {
+                const prefix = `grid_save_${currentCategory}_`;
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (!key.startsWith(prefix)) continue;
+                    const levelIdx = parseInt(key.slice(prefix.length), 10);
+                    const saved = JSON.parse(localStorage.getItem(key) || '[]');
+                    if (saved.length) progressMap.set(levelIdx, saved.length);
                 }
             }
 
@@ -712,9 +752,13 @@
 
         window.addEventListener('resize', () => { resizeCanvas(); draw(); });
         window.addEventListener('beforeunload', () => saveState(true));
-        window.addEventListener('load', () => {
+        window.addEventListener('load', async () => {
             renderCategoryTabs();
-            if (!supabaseClient) bypassAuth();
+            if (supabaseClient) {
+                await initAuthSession();
+            } else {
+                bypassAuth();
+            }
         });
     </script>
 </body>
