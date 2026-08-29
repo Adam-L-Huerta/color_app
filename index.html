@@ -130,6 +130,7 @@
         let currentLevel = 0;
         let activeColorId = 1;
         let customImageUrl = "";
+        let isLevelLoaded = false;
 
         let isPanMode = false;
         let colorPalette = [];
@@ -282,6 +283,7 @@
         }
 
         async function initLevel(levelIndex, overrideUrl = null) {
+            isLevelLoaded = false;
             currentLevel = levelIndex;
             document.getElementById('level-title').textContent = `${currentCategory.toUpperCase()} #${currentLevel + 1}`;
             
@@ -293,13 +295,15 @@
                 const userId = currentUser ? currentUser.id : 'guest';
                 
                 if (!url && currentUser && supabaseClient) {
-                    const { data } = await supabaseClient.from('user_progress')
-                        .select('custom_url')
-                        .eq('user_id', currentUser.id)
-                        .eq('category', 'custom')
-                        .eq('level_index', currentLevel)
-                        .maybeSingle();
-                    if (data && data.custom_url) url = data.custom_url;
+                    try {
+                        const { data } = await supabaseClient.from('user_progress')
+                            .select('custom_url')
+                            .eq('user_id', currentUser.id)
+                            .eq('category', 'custom')
+                            .eq('level_index', currentLevel)
+                            .maybeSingle();
+                        if (data && data.custom_url) url = data.custom_url;
+                    } catch(e){}
                 }
                 
                 if (!url) url = localStorage.getItem(`custom_url_${userId}_${currentLevel}`);
@@ -316,6 +320,7 @@
             }
 
             await loadState();
+            isLevelLoaded = true;
             resizeCanvas();
             resetViewport();
             generatePaletteUI();
@@ -610,10 +615,16 @@
             if (currentCategory === 'custom' && customImageUrl) {
                 payload.custom_url = customImageUrl;
             }
-            await supabaseClient.from('user_progress').upsert(payload, { onConflict: 'user_id,category,level_index' });
+            try {
+                await supabaseClient.from('user_progress').upsert(payload, { onConflict: 'user_id,category,level_index' });
+            } catch(e) {
+                console.warn("Cloud persist failed:", e);
+            }
         }
 
         function saveState(immediate = false) {
+            if (!isLevelLoaded) return;
+
             const coloredIndices = [];
             for (let i = 0; i < userGrid.length; i++) {
                 if (userGrid[i] !== 0) coloredIndices.push(i);
@@ -634,27 +645,40 @@
         async function loadState() {
             userGrid.fill(0);
             const key = getStorageKey(currentCategory, currentLevel);
-            let coloredIndices = [];
+            
+            let localData = [];
+            try {
+                localData = JSON.parse(localStorage.getItem(key) || '[]');
+            } catch(e){}
+
+            let coloredIndices = localData;
 
             if (currentUser && supabaseClient) {
-                const { data } = await supabaseClient.from('user_progress')
-                    .select('colored_indices, custom_url')
-                    .eq('user_id', currentUser.id)
-                    .eq('category', currentCategory)
-                    .eq('level_index', currentLevel)
-                    .maybeSingle();
+                try {
+                    const { data, error } = await supabaseClient.from('user_progress')
+                        .select('colored_indices, custom_url')
+                        .eq('user_id', currentUser.id)
+                        .eq('category', currentCategory)
+                        .eq('level_index', currentLevel)
+                        .maybeSingle();
 
-                if (data) {
-                    if (data.custom_url) customImageUrl = data.custom_url;
-                    coloredIndices = data.colored_indices || [];
-                    localStorage.setItem(key, JSON.stringify(coloredIndices));
+                    if (!error && data) {
+                        const cloudIndices = data.colored_indices || [];
+                        if (cloudIndices.length >= localData.length) {
+                            coloredIndices = cloudIndices;
+                            localStorage.setItem(key, JSON.stringify(coloredIndices));
+                        }
+                        if (data.custom_url) customImageUrl = data.custom_url;
+                    }
+                } catch(e) {
+                    console.warn("Cloud load failed, using local storage cache:", e);
                 }
-            } else {
-                coloredIndices = JSON.parse(localStorage.getItem(key) || '[]');
             }
 
             for (let idx of coloredIndices) {
-                userGrid[idx] = answerGrid[idx];
+                if (idx < userGrid.length) {
+                    userGrid[idx] = answerGrid[idx];
+                }
             }
         }
 
@@ -710,29 +734,38 @@
             const userId = currentUser ? currentUser.id : 'guest';
             const prefix = `grid_save_${userId}_${currentCategory}_`;
 
-            if (currentUser && supabaseClient) {
-                const { data } = await supabaseClient.from('user_progress')
-                    .select('level_index, colored_indices')
-                    .eq('user_id', currentUser.id)
-                    .eq('category', currentCategory);
-
-                if (data) {
-                    for (const row of data) {
-                        const indices = row.colored_indices || [];
-                        if (indices.length > 0) {
-                            progressMap.set(row.level_index, indices.length);
-                            localStorage.setItem(`${prefix}${row.level_index}`, JSON.stringify(indices));
-                        }
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith(prefix)) {
+                    const levelIdx = parseInt(key.slice(prefix.length), 10);
+                    if (!isNaN(levelIdx)) {
+                        try {
+                            const saved = JSON.parse(localStorage.getItem(key) || '[]');
+                            if (saved.length > 0) progressMap.set(levelIdx, saved.length);
+                        } catch(e){}
                     }
                 }
-            } else {
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    if (!key.startsWith(prefix)) continue;
-                    const levelIdx = parseInt(key.slice(prefix.length), 10);
-                    if (isNaN(levelIdx)) continue;
-                    const saved = JSON.parse(localStorage.getItem(key) || '[]');
-                    if (saved.length > 0) progressMap.set(levelIdx, saved.length);
+            }
+
+            if (currentUser && supabaseClient) {
+                try {
+                    const { data } = await supabaseClient.from('user_progress')
+                        .select('level_index, colored_indices')
+                        .eq('user_id', currentUser.id)
+                        .eq('category', currentCategory);
+
+                    if (data) {
+                        for (const row of data) {
+                            const cloudCount = (row.colored_indices || []).length;
+                            const localCount = progressMap.get(row.level_index) || 0;
+                            if (cloudCount > localCount) {
+                                progressMap.set(row.level_index, cloudCount);
+                                localStorage.setItem(`${prefix}${row.level_index}`, JSON.stringify(row.colored_indices));
+                            }
+                        }
+                    }
+                } catch(e) {
+                    console.warn("Gallery cloud sync failed:", e);
                 }
             }
 
@@ -751,6 +784,7 @@
 
         async function returnToGallery() {
             saveState(true);
+            isLevelLoaded = false;
             document.getElementById('game-screen').classList.remove('active');
             document.getElementById('home-screen').classList.add('active');
             await renderPortfolioGallery();
@@ -758,12 +792,18 @@
 
         async function moveLevel(dir) {
             saveState(true);
+            isLevelLoaded = false;
             const next = currentLevel + dir;
             if (next >= 0 && next < TOTAL_LEVELS) await initLevel(next);
         }
 
         window.addEventListener('resize', () => { resizeCanvas(); draw(); });
+        window.addEventListener('visibilitychange', () => {
+            if (document.visibilityState === 'hidden') saveState(true);
+        });
+        window.addEventListener('pagehide', () => saveState(true));
         window.addEventListener('beforeunload', () => saveState(true));
+
         window.addEventListener('load', async () => {
             renderCategoryTabs();
             if (supabaseClient) {
