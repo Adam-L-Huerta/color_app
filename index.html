@@ -254,7 +254,13 @@
         }
 
         async function logout() {
-            if (supabaseClient) await supabaseClient.auth.signOut();
+            if (isLevelLoaded) {
+                await saveState(true);
+            }
+            if (supabaseClient) {
+                await supabaseClient.auth.signOut();
+            }
+            currentUser = null;
             localStorage.clear();
             location.reload();
         }
@@ -622,7 +628,7 @@
             }
         }
 
-        function saveState(immediate = false) {
+        async function saveState(immediate = false) {
             if (!isLevelLoaded) return;
 
             const coloredIndices = [];
@@ -635,7 +641,7 @@
             if (currentUser && supabaseClient) {
                 clearTimeout(saveTimeout);
                 if (immediate) {
-                    persistToCloud(coloredIndices);
+                    await persistToCloud(coloredIndices);
                 } else {
                     saveTimeout = setTimeout(() => persistToCloud(coloredIndices), 500);
                 }
@@ -645,13 +651,7 @@
         async function loadState() {
             userGrid.fill(0);
             const key = getStorageKey(currentCategory, currentLevel);
-            
-            let localData = [];
-            try {
-                localData = JSON.parse(localStorage.getItem(key) || '[]');
-            } catch(e){}
-
-            let coloredIndices = localData;
+            let coloredIndices = [];
 
             if (currentUser && supabaseClient) {
                 try {
@@ -663,16 +663,18 @@
                         .maybeSingle();
 
                     if (!error && data) {
-                        const cloudIndices = data.colored_indices || [];
-                        if (cloudIndices.length >= localData.length) {
-                            coloredIndices = cloudIndices;
-                            localStorage.setItem(key, JSON.stringify(coloredIndices));
-                        }
+                        coloredIndices = data.colored_indices || [];
                         if (data.custom_url) customImageUrl = data.custom_url;
+                        localStorage.setItem(key, JSON.stringify(coloredIndices));
+                    } else {
+                        coloredIndices = JSON.parse(localStorage.getItem(key) || '[]');
                     }
                 } catch(e) {
-                    console.warn("Cloud load failed, using local storage cache:", e);
+                    console.warn("Cloud load failed, falling back to local storage:", e);
+                    coloredIndices = JSON.parse(localStorage.getItem(key) || '[]');
                 }
+            } else {
+                coloredIndices = JSON.parse(localStorage.getItem(key) || '[]');
             }
 
             for (let idx of coloredIndices) {
@@ -734,19 +736,6 @@
             const userId = currentUser ? currentUser.id : 'guest';
             const prefix = `grid_save_${userId}_${currentCategory}_`;
 
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                if (key && key.startsWith(prefix)) {
-                    const levelIdx = parseInt(key.slice(prefix.length), 10);
-                    if (!isNaN(levelIdx)) {
-                        try {
-                            const saved = JSON.parse(localStorage.getItem(key) || '[]');
-                            if (saved.length > 0) progressMap.set(levelIdx, saved.length);
-                        } catch(e){}
-                    }
-                }
-            }
-
             if (currentUser && supabaseClient) {
                 try {
                     const { data } = await supabaseClient.from('user_progress')
@@ -756,16 +745,28 @@
 
                     if (data) {
                         for (const row of data) {
-                            const cloudCount = (row.colored_indices || []).length;
-                            const localCount = progressMap.get(row.level_index) || 0;
-                            if (cloudCount > localCount) {
-                                progressMap.set(row.level_index, cloudCount);
-                                localStorage.setItem(`${prefix}${row.level_index}`, JSON.stringify(row.colored_indices));
+                            const indices = row.colored_indices || [];
+                            if (indices.length > 0) {
+                                progressMap.set(row.level_index, indices.length);
+                                localStorage.setItem(`${prefix}${row.level_index}`, JSON.stringify(indices));
                             }
                         }
                     }
                 } catch(e) {
                     console.warn("Gallery cloud sync failed:", e);
+                }
+            } else {
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key && key.startsWith(prefix)) {
+                        const levelIdx = parseInt(key.slice(prefix.length), 10);
+                        if (!isNaN(levelIdx)) {
+                            try {
+                                const saved = JSON.parse(localStorage.getItem(key) || '[]');
+                                if (saved.length > 0) progressMap.set(levelIdx, saved.length);
+                            } catch(e){}
+                        }
+                    }
                 }
             }
 
@@ -783,7 +784,7 @@
         }
 
         async function returnToGallery() {
-            saveState(true);
+            await saveState(true);
             isLevelLoaded = false;
             document.getElementById('game-screen').classList.remove('active');
             document.getElementById('home-screen').classList.add('active');
@@ -791,18 +792,18 @@
         }
 
         async function moveLevel(dir) {
-            saveState(true);
+            await saveState(true);
             isLevelLoaded = false;
             const next = currentLevel + dir;
             if (next >= 0 && next < TOTAL_LEVELS) await initLevel(next);
         }
 
         window.addEventListener('resize', () => { resizeCanvas(); draw(); });
-        window.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'hidden') saveState(true);
+        window.addEventListener('visibilitychange', async () => {
+            if (document.visibilityState === 'hidden') await saveState(true);
         });
-        window.addEventListener('pagehide', () => saveState(true));
-        window.addEventListener('beforeunload', () => saveState(true));
+        window.addEventListener('pagehide', async () => await saveState(true));
+        window.addEventListener('beforeunload', async () => await saveState(true));
 
         window.addEventListener('load', async () => {
             renderCategoryTabs();
