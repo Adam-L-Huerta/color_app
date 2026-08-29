@@ -149,6 +149,11 @@
         let lastPointerPos = { x: 0, y: 0 };
         let saveTimeout = null;
 
+        function getStorageKey(category, levelIndex) {
+            const userId = currentUser ? currentUser.id : 'guest';
+            return `grid_save_${userId}_${category}_${levelIndex}`;
+        }
+
         function hslToRgb(h, s, l) {
             let r, g, b;
             if (s === 0) {
@@ -285,6 +290,7 @@
                 await loadPhotoFromUrl(`https://picsum.photos/id/${imageId}/150/150`);
             } else if (currentCategory === 'custom') {
                 let url = overrideUrl || customImageUrl;
+                const userId = currentUser ? currentUser.id : 'guest';
                 
                 if (!url && currentUser && supabaseClient) {
                     const { data } = await supabaseClient.from('user_progress')
@@ -296,14 +302,14 @@
                     if (data && data.custom_url) url = data.custom_url;
                 }
                 
-                if (!url) url = localStorage.getItem(`custom_url_${currentLevel}`);
+                if (!url) url = localStorage.getItem(`custom_url_${userId}_${currentLevel}`);
                 
                 if (!url) {
                     alert("Please provide a valid image URL.");
                     return;
                 }
                 customImageUrl = url;
-                localStorage.setItem(`custom_url_${currentLevel}`, url);
+                localStorage.setItem(`custom_url_${userId}_${currentLevel}`, url);
                 await loadPhotoFromUrl(url);
             } else {
                 generateDeterministicData(currentLevel);
@@ -612,7 +618,7 @@
             for (let i = 0; i < userGrid.length; i++) {
                 if (userGrid[i] !== 0) coloredIndices.push(i);
             }
-            const key = `grid_save_${currentCategory}_${currentLevel}`;
+            const key = getStorageKey(currentCategory, currentLevel);
             localStorage.setItem(key, JSON.stringify(coloredIndices));
 
             if (currentUser && supabaseClient) {
@@ -627,8 +633,8 @@
 
         async function loadState() {
             userGrid.fill(0);
-            const key = `grid_save_${currentCategory}_${currentLevel}`;
-            let coloredIndices = JSON.parse(localStorage.getItem(key) || '[]');
+            const key = getStorageKey(currentCategory, currentLevel);
+            let coloredIndices = [];
 
             if (currentUser && supabaseClient) {
                 const { data } = await supabaseClient.from('user_progress')
@@ -640,12 +646,11 @@
 
                 if (data) {
                     if (data.custom_url) customImageUrl = data.custom_url;
-                    const remoteIndices = data.colored_indices || [];
-                    if (remoteIndices.length >= coloredIndices.length) {
-                        coloredIndices = remoteIndices;
-                        localStorage.setItem(key, JSON.stringify(coloredIndices));
-                    }
+                    coloredIndices = data.colored_indices || [];
+                    localStorage.setItem(key, JSON.stringify(coloredIndices));
                 }
+            } else {
+                coloredIndices = JSON.parse(localStorage.getItem(key) || '[]');
             }
 
             for (let idx of coloredIndices) {
@@ -702,16 +707,8 @@
             completed.innerHTML = '';
 
             const progressMap = new Map();
-            const prefix = `grid_save_${currentCategory}_`;
-
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                if (!key.startsWith(prefix)) continue;
-                const levelIdx = parseInt(key.slice(prefix.length), 10);
-                if (isNaN(levelIdx)) continue;
-                const saved = JSON.parse(localStorage.getItem(key) || '[]');
-                if (saved.length > 0) progressMap.set(levelIdx, saved.length);
-            }
+            const userId = currentUser ? currentUser.id : 'guest';
+            const prefix = `grid_save_${userId}_${currentCategory}_`;
 
             if (currentUser && supabaseClient) {
                 const { data } = await supabaseClient.from('user_progress')
@@ -721,25 +718,21 @@
 
                 if (data) {
                     for (const row of data) {
-                        const remoteIndices = row.colored_indices || [];
-                        const remoteCount = remoteIndices.length;
-                        const localCount = progressMap.get(row.level_index) || 0;
-
-                        if (remoteCount >= localCount) {
-                            if (remoteCount > 0) {
-                                progressMap.set(row.level_index, remoteCount);
-                                localStorage.setItem(`${prefix}${row.level_index}`, JSON.stringify(remoteIndices));
-                            }
-                        } else {
-                            const localIndices = JSON.parse(localStorage.getItem(`${prefix}${row.level_index}`) || '[]');
-                            await supabaseClient.from('user_progress').upsert({
-                                user_id: currentUser.id,
-                                category: currentCategory,
-                                level_index: row.level_index,
-                                colored_indices: localIndices
-                            }, { onConflict: 'user_id,category,level_index' });
+                        const indices = row.colored_indices || [];
+                        if (indices.length > 0) {
+                            progressMap.set(row.level_index, indices.length);
+                            localStorage.setItem(`${prefix}${row.level_index}`, JSON.stringify(indices));
                         }
                     }
+                }
+            } else {
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (!key.startsWith(prefix)) continue;
+                    const levelIdx = parseInt(key.slice(prefix.length), 10);
+                    if (isNaN(levelIdx)) continue;
+                    const saved = JSON.parse(localStorage.getItem(key) || '[]');
+                    if (saved.length > 0) progressMap.set(levelIdx, saved.length);
                 }
             }
 
